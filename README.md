@@ -20,7 +20,7 @@ Run:
 install.bat
 ```
 
-The installer creates the project-local environment and installs the required runtime components and acceleration packages.
+The installer creates the project-local environment and installs the required runtime components and acceleration packages. eSpeak NG is mandatory for the phonetic training path: `espeakng` and the Windows-capable `espeakng-loader` are installed from the project lockfile, and the installer verifies native Spanish IPA generation. A separate system eSpeak installation is not required; when `espeak-ng.exe` is available it remains the preferred fast path. For full text normalization, Windows uses a separate project-local Conda environment containing NeMo Text Processing and the conda-forge Pynini build; the main `.venv` remains isolated. If Conda is not already installed, the installer bootstraps Miniforge locally without changing the system PATH. Only if that bootstrap also fails does Spanish fall back to the bundled `num2words` normalizer.
 
 Model weights are downloaded automatically when needed rather than during the initial environment installation.
 
@@ -251,6 +251,21 @@ Generated audio is stored under:
 ```text
 outputs/
 ```
+## Experimental LoRA Training
+
+![Dataset_prep](assets/tab3.png)
+
+![Lora_training](assets/tab4.png)
+
+The GUI includes a **Prepare Dataset → LoRA Training** workflow for experimental PEFT adaptation of the IndexTTS 2.5 autoregressive GPT. The semantic codec, S2Mel, speaker/feature models and BigVGAN remain frozen. The active profile is acoustic-only: it uses IndexTTS's native mel-token reconstruction loss.
+
+Dataset projects use matching audio and same-stem `.txt` transcripts and are written to `training/datasets/<project>/manifest.jsonl`. The manifest records both `text` (target supervision) and `reference_text` (reference-audio conditioning); current preparation initializes them from the same transcript, while older manifests fall back safely to `text`. Missing transcripts can optionally be generated with Faster-Whisper. the optional transcript is saved beside a library sample as a same-stem `.txt` sidecar and is restored whenever that sample is selected.
+
+The training tab provides project selection, VRAM presets, AutoTune, Steps or Epochs, editable LoRA rank/alpha/dropout, learning rate, gradient accumulation, gradient clipping, checkpoint cadence, optional checkpoint evaluation audio, resume, persistent progress/ETA and TensorBoard. The target transcript is retained only as the mandatory conditioning input of the native TTS objective; it is not added as a separate semantic or ASR target. Checkpoints and final adapters are written under `training/outputs/<adapter>/`.
+
+Single Inference also exposes optional **Reference Transcript Conditioning**. The transcript can be typed manually or generated with Faster-Whisper (default `large-v3`). It describes the words spoken in the reference audio; it is not appended to the target text. Newly trained acoustic-only adapters do not learn this optional signal, so it remains inactive for them.
+
+This trainer is experimental and should be validated with short runs and saved checkpoints before committing to long training sessions.
 
 ## Credits
 

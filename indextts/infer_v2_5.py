@@ -520,7 +520,8 @@ class IndexTTS2:
     def infer(self, spk_audio_prompt, text, output_path, lang,
               emo_audio_prompt=None, emo_alpha=1.0,
               emo_vector=None, use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
-              verbose=False, max_text_tokens_per_segment=120, stream_return=False, more_segment_before=0, duration_factor=1.0, text_normalization=True, **generation_kwargs):
+              verbose=False, max_text_tokens_per_segment=120, stream_return=False, more_segment_before=0,
+              duration_factor=1.0, text_normalization=True, reference_text=None, **generation_kwargs):
         if self.low_vram and not stream_return and len(text) > 40:
             segments = self.split_text_by_punctuation(text, max_chars=40)
             if verbose:
@@ -532,7 +533,8 @@ class IndexTTS2:
                     spk_audio_prompt, seg_text, None, lang,
                     emo_audio_prompt, emo_alpha, emo_vector,
                     use_emo_text, emo_text, use_random, 0,
-                    verbose, max_text_tokens_per_segment, False, 0, duration_factor=duration_factor, text_normalization=text_normalization, **generation_kwargs
+                    verbose, max_text_tokens_per_segment, False, 0, duration_factor=duration_factor,
+                    text_normalization=text_normalization, reference_text=reference_text, **generation_kwargs
                 )
                 result = None
                 for result in gen:
@@ -566,7 +568,9 @@ class IndexTTS2:
                 emo_audio_prompt, emo_alpha,
                 emo_vector,
                 use_emo_text, emo_text, use_random, interval_silence,
-                verbose, max_text_tokens_per_segment, stream_return, more_segment_before, duration_factor=duration_factor, text_normalization=text_normalization, **generation_kwargs
+                verbose, max_text_tokens_per_segment, stream_return, more_segment_before,
+                duration_factor=duration_factor, text_normalization=text_normalization,
+                reference_text=reference_text, **generation_kwargs
             )
         else:
             try:
@@ -575,7 +579,9 @@ class IndexTTS2:
                     emo_audio_prompt, emo_alpha,
                     emo_vector,
                     use_emo_text, emo_text, use_random, interval_silence,
-                    verbose, max_text_tokens_per_segment, stream_return, more_segment_before, duration_factor=duration_factor, text_normalization=text_normalization, **generation_kwargs
+                    verbose, max_text_tokens_per_segment, stream_return, more_segment_before,
+                    duration_factor=duration_factor, text_normalization=text_normalization,
+                    reference_text=reference_text, **generation_kwargs
                 ))[0]
             except IndexError:
                 return None
@@ -584,7 +590,8 @@ class IndexTTS2:
     def infer_generator(self, spk_audio_prompt, text, output_path, lang,
               emo_audio_prompt=None, emo_alpha=1.0, emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
-              verbose=False, max_text_tokens_per_segment=120, stream_return=False, quick_streaming_tokens=0, duration_factor=1.0, text_normalization=True, **generation_kwargs):
+              verbose=False, max_text_tokens_per_segment=120, stream_return=False, quick_streaming_tokens=0,
+              duration_factor=1.0, text_normalization=True, reference_text=None, **generation_kwargs):
         print(">> starting inference...")
         self._set_gr_progress(0, "starting inference...")
         if verbose:
@@ -732,6 +739,28 @@ class IndexTTS2:
             text = self.ja_text_process.process_ja_text(text)
         text = re.sub(r'<\|([^|]+)\|>', lambda m: f'<|{m.group(1).upper()}|>', text)
         segments = self.split_text_by_tokens(text, max_text_tokens_per_segment, lang_prefix)
+        reference_text_tokens = None
+        reference_text = str(reference_text or '').strip()
+        if reference_text:
+            reference_text = self.text_process.clean_pattern.sub(
+                lambda x: self.text_process.char_rep_map[x.group()], reference_text
+            )
+            if text_normalization:
+                if lang.lower() in ['zh', 'zhen', 'en']:
+                    reference_text = self.text_process.normalize(reference_text)
+                elif lang.lower() in ['ja', 'es']:
+                    reference_text = nemo_text_normalize(reference_text, lang.lower())
+            if lang.lower() in ['ja', 'zh', 'zhen', 'en']:
+                reference_text = reference_text.lower()
+            if lang.lower() == 'es':
+                reference_text = reference_text.upper()
+            reference_text = apply_pronunciation_annotations(reference_text)
+            reference_text = re.sub(r'<\|([^|]+)\|>', lambda m: f'<|{m.group(1).upper()}|>', reference_text)
+            ref_ids = self.tokenizer.encode(lang_prefix + reference_text, allowed_special='all')
+            ref_ids = ref_ids[:max(1, int(max_text_tokens_per_segment))]
+            reference_text_tokens = torch.IntTensor(ref_ids).unsqueeze(0).to(self.device)
+            if verbose:
+                print(f"reference transcript conditioning enabled: {reference_text}")
         segments_count = len(segments)
         segment_tokens = []
         for seg_text in segments:
@@ -793,6 +822,7 @@ class IndexTTS2:
                         emo_vec=emovec,
                         campplus_embedding=style,
                         wav=spk_audio_prompt,
+                        reference_text_inputs=reference_text_tokens,
                         do_sample=do_sample,
                         top_p=top_p,
                         top_k=top_k,
@@ -1097,6 +1127,7 @@ if __name__ == "__main__":
     parser.add_argument("--text", type=str, default="欢迎大家来体验indextts2，并给予我们意见与反馈，谢谢大家。")
     parser.add_argument("--lang", type=str, default="ZH")
     parser.add_argument("--output", type=str, default="gen.wav")
+    parser.add_argument("--reference_text", type=str, default="", help="Optional transcript of the reference audio prompt")
     parser.add_argument("--text_normalization", action="store_true", default=True)
     args = parser.parse_args()
 
@@ -1109,4 +1140,7 @@ if __name__ == "__main__":
         use_qwen_emo=True,
     )
 
-    tts.infer(spk_audio_prompt=args.prompt_wav, text=args.text, lang=args.lang, output_path=args.output, verbose=True, text_normalization=args.text_normalization)
+    tts.infer(
+        spk_audio_prompt=args.prompt_wav, text=args.text, lang=args.lang, output_path=args.output,
+        reference_text=args.reference_text, verbose=True, text_normalization=args.text_normalization,
+    )

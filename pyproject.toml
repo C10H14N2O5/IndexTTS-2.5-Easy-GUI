@@ -34,6 +34,8 @@ dependencies = [
   "cython==3.0.7",
   "descript-audiotools==0.7.2",
   "einops==0.8.1",
+  "espeakng==1.0.5",
+  "espeakng-loader==0.2.4",
   "ffmpeg-python==0.2.0",
   "fugashi==1.5.2",
   "unidic-lite==1.0.8",
@@ -62,7 +64,10 @@ dependencies = [
   "transformers==4.52.1",
   "openai-whisper==20250625",
   "hf_xet",
-  "nemo_text_processing==1.1.0",
+  # Linux imports NeMo TN directly. Windows installs the same package in the
+  # isolated Conda runtime; num2words remains the emergency fallback.
+  "nemo_text_processing==1.2.0; sys_platform == 'linux'",
+  "num2words==0.5.14; sys_platform == 'win32'",
   
   # Use "wetext" on Windows/Mac, otherwise "WeTextProcessing" on Linux.
   "wetext==0.1.0; sys_platform == 'win32'",

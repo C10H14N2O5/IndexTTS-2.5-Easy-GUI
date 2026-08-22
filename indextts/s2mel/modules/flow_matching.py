@@ -54,6 +54,93 @@ class BASECFM(torch.nn.Module, ABC):
         # t_span = t_span + (-1) * (torch.cos(torch.pi / 2 * t_span) - 1 + t_span)
         return self.solve_euler(z, x_lens, prompt, mu, style, f0, t_span, inference_cfg_rate)
 
+    def differentiable_inference(
+        self, mu, x_lens, prompt, style, f0, n_timesteps,
+        temperature=1.0, inference_cfg_rate=0.0, noise=None,
+    ):
+        """Differentiable Euler sampling for auxiliary training objectives.
+
+        ``inference`` intentionally runs under ``torch.inference_mode`` for
+        production speed.  A pronunciation/ASR loss needs the opposite: the
+        generated mel must retain a path back through the CFM estimator to
+        ``mu`` (which is produced by the trainable GPT).  This method keeps
+        the production solver untouched and provides that explicit training
+        path with a small, configurable number of Euler steps.
+        """
+        batch, _, steps = mu.shape[0], self.in_channels, mu.shape[1]
+        if noise is None:
+            x = torch.randn(
+                batch, self.in_channels, steps, device=mu.device, dtype=mu.dtype
+            ) * float(temperature)
+        else:
+            x = noise.to(device=mu.device, dtype=mu.dtype)
+        t_span = torch.linspace(
+            0, 1, max(1, int(n_timesteps)) + 1,
+            device=mu.device, dtype=mu.dtype,
+        )
+        return self.solve_euler_differentiable(
+            x, x_lens, prompt, mu, style, f0, t_span,
+            inference_cfg_rate=float(inference_cfg_rate),
+        )
+
+    def solve_euler_differentiable(
+        self, x, x_lens, prompt, mu, style, f0, t_span, inference_cfg_rate=0.0,
+    ):
+        # The CFM weights are frozen during LoRA/ASR training, but ``mu`` and
+        # the evolving sample still require gradients.  Checkpoint each
+        # estimator call so the differentiable pronunciation path does not
+        # retain all CFM activations for every Euler step.
+        use_checkpoint = torch.is_grad_enabled()
+        if use_checkpoint:
+            from torch.utils.checkpoint import checkpoint
+
+            def estimate(*inputs):
+                return checkpoint(self.estimator, *inputs, use_reentrant=False)
+        else:
+            estimate = self.estimator
+
+        prompt_len = min(int(prompt.size(-1)), int(x.size(-1)))
+        if prompt_len:
+            prompt_x = torch.zeros_like(x)
+            prompt_x[:, :, :prompt_len] = prompt[:, :, :prompt_len]
+            x = torch.cat(
+                [torch.zeros_like(x[:, :, :prompt_len]), x[:, :, prompt_len:]], dim=-1
+            )
+        else:
+            prompt_x = torch.zeros_like(x)
+
+        # Avoid mutating the conditioning tensor supplied by the caller.
+        if self.zero_prompt_speech_token and prompt_len:
+            mu = torch.cat(
+                [torch.zeros_like(mu[:, :prompt_len]), mu[:, prompt_len:]], dim=1
+            )
+
+        batch = x.size(0)
+        for index in range(1, len(t_span)):
+            dt = t_span[index] - t_span[index - 1]
+            t = t_span[index - 1]
+            if inference_cfg_rate > 0:
+                stacked_prompt = torch.cat([prompt_x, torch.zeros_like(prompt_x)], dim=0)
+                stacked_style = torch.cat([style, torch.zeros_like(style)], dim=0)
+                stacked_mu = torch.cat([mu, torch.zeros_like(mu)], dim=0)
+                stacked_x = torch.cat([x, x], dim=0)
+                stacked_lens = torch.cat([x_lens, x_lens], dim=0)
+                stacked_t = torch.full((batch * 2,), t, device=x.device, dtype=x.dtype)
+                dphi, cfg_dphi = estimate(
+                    stacked_x, stacked_prompt, stacked_lens, stacked_t,
+                    stacked_style, stacked_mu,
+                ).chunk(2, dim=0)
+                dphi = (1.0 + inference_cfg_rate) * dphi - inference_cfg_rate * cfg_dphi
+            else:
+                t_batch = torch.full((batch,), t, device=x.device, dtype=x.dtype)
+                dphi = estimate(x, prompt_x, x_lens, t_batch, style, mu)
+            x = x + dt * dphi
+            if prompt_len:
+                x = torch.cat(
+                    [torch.zeros_like(x[:, :, :prompt_len]), x[:, :, prompt_len:]], dim=-1
+                )
+        return x
+
     def solve_euler(self, x, x_lens, prompt, mu, style, f0, t_span, inference_cfg_rate=0.5):
         """
         Fixed euler solver for ODEs.

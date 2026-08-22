@@ -15,6 +15,10 @@
 
 """TTS 前端文本归一化（Text Normalization）。
 
+Linux uses NeMo TN directly. Windows uses the same NeMo grammar through a
+small isolated Conda worker (Pynini is installed there from conda-forge),
+with a portable Spanish fallback if that optional worker is unavailable.
+
 基于 ``nemo_text_processing`` 把数字/符号/日期/货币等 non-standard words 展开成
 可朗读文本（例如 ``"25%"`` -> ``"twenty five percent"``）。
 
@@ -25,11 +29,12 @@
 - **NeMo 不是所有语言都有 TN grammar**（如日语 ja 没有）。不支持的语言直接返回
   原文透传。
 - **懒加载 + 缓存**：``Normalizer`` 构建 grammar 较慢（秒级），按语言缓存实例。
-- **失败降级**：``nemo_text_processing`` 未安装、grammar 构建失败、或 normalize
-  调用抛异常时，记 warning 并返回原文，绝不中断合成。
+- **失败降级**：NeMo/fallback grammar 构建失败或 normalize 调用抛异常时，
+  返回原文，绝不中断合成。
 """
 
 import os
+import re
 import time
 import logging
 from typing import Dict, Optional
@@ -40,7 +45,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # 语言码映射：上游服务码 / ISO 639-3 -> NeMo TN 语言码
 #
-# 仅列出 NeMo 目前有 TN grammar 的语言。未列出的（如 ja 日语）会跳过归一化。
+# 仅列出 IndexTTS 2.5 当前暴露且 NeMo TN 有 grammar 的语言。
 # NeMo 语言码见 nemo_text_processing.text_normalization.normalize.Normalizer(lang=...)。
 # 需要扩充时，确认对应语言在你安装的 nemo 版本里确有 TN grammar 后再加。
 # ---------------------------------------------------------------------------
@@ -51,7 +56,7 @@ _SERVICE_TO_NEMO: Dict[str, str] = {
     "zh": "zh",
     "es": "es",
     "en": "en",
-    # "ja": NeMo 无日语 TN grammar，故意不列入 -> 跳过归一化
+    "ja": "ja",
 }
 
 # ISO 639-3 -> 服务码
@@ -97,23 +102,95 @@ class TextNormalizer:
         # nemo_lang -> Normalizer 实例；值为 None 表示该语言不可用（已尝试过并失败）
         self._cache: Dict[str, Optional[object]] = {}
 
+    @staticmethod
+    def _windows_spanish_fallback():
+        """Build the Windows-safe Spanish numeric normalizer."""
+        from num2words import num2words
+
+        class _SpanishNormalizer:
+            _NUMBER = re.compile(r"(?<!\w)([-+]?\d+(?:[.,]\d+)?)(%?)(?!\w)")
+
+            @staticmethod
+            def _number_words(raw):
+                normalized = str(raw).replace(',', '.')
+                if '.' not in normalized:
+                    return num2words(int(normalized), lang='es')
+                whole, fraction = normalized.split('.', 1)
+                fraction_words = ' '.join(num2words(int(digit), lang='es') for digit in fraction)
+                return f"{num2words(int(whole), lang='es')} coma {fraction_words}"
+
+            def normalize(self, text, verbose=False):
+                def replace(match):
+                    try:
+                        words = self._number_words(match.group(1))
+                        return f"{words} por ciento" if match.group(2) else words
+                    except (TypeError, ValueError, OverflowError):
+                        return match.group(0)
+                return self._NUMBER.sub(replace, str(text))
+
+        return _SpanishNormalizer()
+
+    @staticmethod
+    def _windows_nemo_proxy(nemo_lang: str, input_case: str):
+        """Return a proxy backed by the isolated Conda/NeMo worker."""
+        from tools.nemo_tn_runtime import get_nemo_tn_client
+
+        client = get_nemo_tn_client()
+
+        class _NemoProxy:
+            def normalize(self, text, verbose=False):
+                result = client.normalize(text, nemo_lang, input_case=input_case)
+                if result is None:
+                    raise RuntimeError("isolated NeMo runtime returned no result")
+                return result
+
+        return _NemoProxy()
+
     def _get_normalizer(self, nemo_lang: str):
         """返回缓存的 Normalizer；首次构建，失败则缓存 None 以避免反复重试。"""
         if nemo_lang in self._cache:
             return self._cache[nemo_lang]
 
         normalizer = None
-        try:
-            from nemo_text_processing.text_normalization.normalize import Normalizer
+        if os.name == "nt":
+            try:
+                from tools.nemo_tn_runtime import get_nemo_tn_client
 
-            normalizer = Normalizer(input_case=self.input_case, lang=nemo_lang)
-            logger.info(f"nemo Normalizer(lang={nemo_lang}) initialized")
-        except Exception as e:
-            logger.warning(
-                f"build nemo Normalizer(lang={nemo_lang}) failed -> "
-                f"skip text normalization for this language: {e}"
-            )
-            normalizer = None
+                client = get_nemo_tn_client()
+                if client.available:
+                    normalizer = self._windows_nemo_proxy(nemo_lang, self.input_case)
+                    logger.info(
+                        "Using isolated Windows NeMo text-normalization runtime for lang=%s",
+                        nemo_lang,
+                    )
+                elif nemo_lang == "es":
+                    normalizer = self._windows_spanish_fallback()
+                    logger.info(
+                        "Using Windows Spanish text-normalization fallback; "
+                        "isolated NeMo/Conda runtime is not installed."
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Windows NeMo text-normalization runtime failed for lang=%s: %s",
+                    nemo_lang,
+                    e,
+                )
+                if nemo_lang == "es":
+                    try:
+                        normalizer = self._windows_spanish_fallback()
+                    except Exception:
+                        normalizer = None
+        else:
+            try:
+                from nemo_text_processing.text_normalization.normalize import Normalizer
+
+                normalizer = Normalizer(input_case=self.input_case, lang=nemo_lang)
+                logger.info(f"nemo Normalizer(lang={nemo_lang}) initialized")
+            except Exception as e:
+                logger.warning(
+                    f"build nemo Normalizer(lang={nemo_lang}) failed -> "
+                    f"skip text normalization for this language: {e}"
+                )
 
         self._cache[nemo_lang] = normalizer
         return normalizer

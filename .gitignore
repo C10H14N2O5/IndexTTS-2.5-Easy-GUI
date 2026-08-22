@@ -43,3 +43,7 @@ desktop.ini
 /voices/
 /emotion_descriptions/
 /accelerator_wheels/*.whl
+
+training/projects/
+training/datasets/
+training/outputs/

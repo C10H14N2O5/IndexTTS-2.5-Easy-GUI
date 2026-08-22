@@ -6,6 +6,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+PHONETIC_SYMBOLS = list('abcdefghijklmnopqrstuvwxyz') + [
+    'ɾ', 'θ', 'ɲ', 'ʝ', 'β', 'ð', 'ɣ', 'ʎ', 'ʃ', 'ʒ', 'ŋ', 'ʔ',
+    'ɐ', 'ə', 'ɤ', 'ø', 'y', 'ç', 'χ', 'ɸ', 'ʂ', 'ʐ', 'ɬ', 'ɹ',
+    'ɻ', 'ɪ', 'ʊ', 'ɛ', 'ɔ', 'sil',
+]
+# Zero is reserved for the CTC blank symbol.
+PHONETIC_VOCAB_SIZE = len(PHONETIC_SYMBOLS) + 1
+
 import transformers
 from transformers import GPT2Config, LogitsProcessorList
 from indextts.gpt.transformers_gpt2 import GPT2PreTrainedModel, GPT2Model
@@ -438,6 +447,15 @@ class UnifiedVoice(nn.Module):
         self.gpt, self.mel_pos_embedding, self.text_pos_embedding, self.mel_layer_pos_embedding, self.text_layer_pos_embedding = \
             build_hf_gpt_transformer(layers, model_dim, heads, self.max_mel_tokens + 2 + self.max_conditioning_inputs,
                                      self.max_text_tokens + 2, checkpointing)
+        # Optional reference-transcript conditioning lives inside the GPT
+        # transformer so PEFT can save/load it together with the adapter.
+        # Zero initialization preserves the pretrained model exactly until a
+        # pronunciation-aware adapter has learned to use this signal.
+        self.gpt.reference_text_proj = nn.Linear(model_dim, model_dim, bias=False)
+        nn.init.zeros_(self.gpt.reference_text_proj.weight)
+        # Auxiliary head used only by the optional legacy phonetic CTC loss.
+        # It is kept inside GPT so PEFT can persist it with the adapter.
+        self.gpt.phonetic_head = nn.Linear(1024, PHONETIC_VOCAB_SIZE)
         if train_solo_embeddings:
             self.mel_solo_embedding = nn.Parameter(torch.randn(1, 1, model_dim) * .02, requires_grad=True)
             self.text_solo_embedding = nn.Parameter(torch.randn(1, 1, model_dim) * .02, requires_grad=True)
@@ -749,10 +767,48 @@ class UnifiedVoice(nn.Module):
         fake_inputs[:, -1] = self.start_mel_token
         return fake_inputs, batched_mel_emb, attention_mask
 
+    def _reference_text_projection(self):
+        """Return the PEFT-aware reference-text projection."""
+        projection = getattr(self.gpt, "reference_text_proj", None)
+        if projection is not None:
+            return projection
+        base = self.gpt.get_base_model() if hasattr(self.gpt, "get_base_model") else self.gpt
+        return getattr(base, "reference_text_proj", None)
+
+    def get_reference_text_conditioning(self, reference_text_inputs, langs):
+        """Encode an optional transcript belonging to the reference audio."""
+        if reference_text_inputs is None:
+            return None
+        if reference_text_inputs.ndim == 1:
+            reference_text_inputs = reference_text_inputs.unsqueeze(0)
+        if reference_text_inputs.numel() == 0:
+            return None
+
+        projection = self._reference_text_projection()
+        if projection is None:
+            return None
+        device = self.text_embedding.weight.device
+        ids = reference_text_inputs.to(device=device, dtype=torch.long)
+        embeddings = self.text_embedding(ids)
+        positions = torch.arange(ids.shape[1], device=device)
+        embeddings = embeddings + self.text_pos_embedding.emb(positions).unsqueeze(0)
+
+        lang_ids = langs.to(device=device, dtype=torch.long)
+        if lang_ids.ndim == 0:
+            lang_ids = lang_ids.unsqueeze(0)
+        if lang_ids.shape[0] == 1 and ids.shape[0] > 1:
+            lang_ids = lang_ids.expand(ids.shape[0])
+        embeddings = embeddings + self.lang_embedding(lang_ids).unsqueeze(1)
+
+        valid = (ids != self.start_text_token) & (ids != self.stop_text_token)
+        weights = valid.to(dtype=embeddings.dtype).unsqueeze(-1)
+        pooled = (embeddings * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
+        return projection(pooled)
+
     def inference_speech(self, speech_condition, text_inputs, langs=None,
                          emo_speech_condition=None, cond_lengths=None, emo_cond_lengths=None, emo_vec=None,
                          use_speed=False, campplus_embedding=None, wav=None,
-                         input_tokens=None, num_return_sequences=1,
+                         input_tokens=None, num_return_sequences=1, reference_text_inputs=None,
                          max_generate_length=None, typical_sampling=False, typical_mass=.9, **hf_generate_kwargs):
         """
         Args:
@@ -800,6 +856,14 @@ class UnifiedVoice(nn.Module):
         else:
             print('Use the specified emotion vector')
 
+        reference_condition = self.get_reference_text_conditioning(reference_text_inputs, langs)
+        if reference_condition is not None:
+            reference_condition = reference_condition.to(
+                device=speech_conditioning_latent.device,
+                dtype=speech_conditioning_latent.dtype,
+            )
+            speech_conditioning_latent = speech_conditioning_latent + reference_condition.unsqueeze(1)
+
         if self.spk_cond_mode == "campplus":
             conds_latent = torch.cat((speech_conditioning_latent + emo_vec.unsqueeze(1), torch.zeros(speech_conditioning_latent.size(0), 2, speech_conditioning_latent.size(2)).to(speech_conditioning_latent.device)), 1)
         else:
@@ -834,6 +898,18 @@ class UnifiedVoice(nn.Module):
             min_tokens_to_keep = 2 if hf_generate_kwargs.get("num_beams", 1) > 1 else 1
             logits_processor.append(TypicalLogitsWarper(mass=typical_mass, min_tokens_to_keep=min_tokens_to_keep))
         max_length = (trunc_index + self.max_mel_tokens - 1) if max_generate_length is None else trunc_index + max_generate_length
+
+        # Transformers warns when sampling-only controls are passed to greedy
+        # generation, and when beam-only length_penalty is used with a single
+        # beam.  The Eval Audio path intentionally uses deterministic greedy
+        # decoding, so remove only the controls that cannot be honored in the
+        # selected mode instead of pretending they affected the result.
+        hf_generate_kwargs = dict(hf_generate_kwargs)
+        if not bool(hf_generate_kwargs.get("do_sample", True)):
+            for key in ("temperature", "top_p", "top_k"):
+                hf_generate_kwargs.pop(key, None)
+        if int(hf_generate_kwargs.get("num_beams", 1)) <= 1:
+            hf_generate_kwargs.pop("length_penalty", None)
         
         # Use accel engine if available (single sequence only)
         if self.accel_engine is not None and num_return_sequences == 1:

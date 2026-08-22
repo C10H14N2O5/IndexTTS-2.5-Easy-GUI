@@ -34,6 +34,13 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+"%PY_EXE%" "%CD%\tools\verify_numpy.py"
+if errorlevel 1 (
+  echo [ERROR] The project NumPy installation is incomplete or shadowed.
+  echo Run 1- install.bat with this project folder as the working directory.
+  pause
+  exit /b 1
+)
 
 "%PY_EXE%" "%CD%\easy_gui.py"
 if errorlevel 1 (

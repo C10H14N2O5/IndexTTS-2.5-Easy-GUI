@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import importlib
 import json
+import math
 import importlib.metadata
 import importlib.util
 import os
@@ -35,8 +36,12 @@ SETTINGS_FILE = RUNTIME_DIR / "gui_settings.json"
 CACHE_DIR = RUNTIME_DIR / "hf-cache"
 TEMP_DIR = RUNTIME_DIR / "temp"
 ASSETS_DIR = ROOT / "assets"
+TRAINING_DIR = ROOT / "training"
+TRAINING_PROJECTS_DIR = TRAINING_DIR / "projects"
+TRAINING_DATASETS_DIR = TRAINING_DIR / "datasets"
+TRAINING_OUTPUTS_DIR = TRAINING_DIR / "outputs"
 DIALOGUE_MAX_SEGMENTS = 12
-for p in (MODEL_DIR, OUTPUTS_DIR, VOICES_DIR, EMOTION_DESCRIPTIONS_DIR, CACHE_DIR, TEMP_DIR):
+for p in (MODEL_DIR, OUTPUTS_DIR, VOICES_DIR, EMOTION_DESCRIPTIONS_DIR, CACHE_DIR, TEMP_DIR, TRAINING_PROJECTS_DIR, TRAINING_DATASETS_DIR, TRAINING_OUTPUTS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
 # Keep project caches and temporary files local to this folder.
@@ -54,6 +59,8 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 import gradio as gr
+
+from indextts.utils.text_chunking import CHUNK_CHOICES, split_long_text
 
 try:
     import winsound
@@ -198,6 +205,56 @@ CSS = """
 .runtime-metrics textarea { font-family: Consolas, ui-monospace, monospace !important; }
 .model-ready { padding: 9px 12px; border-radius: 8px; background: rgba(40,167,69,.10); }
 .model-missing { padding: 9px 12px; border-radius: 8px; background: rgba(220,53,69,.10); }
+.training-card { padding:16px !important; border-radius:10px !important; background:rgba(128,128,128,.055) !important; }
+.training-progress textarea { font-family:Consolas,monospace !important; }
+.form-section { padding: 14px !important; border: 1px solid var(--border-color-primary) !important; border-radius: 10px !important; background: var(--block-background-fill) !important; }
+
+.training-project-bar {
+    padding: 12px 14px !important;
+    margin-bottom: 14px !important;
+    border: 1px solid rgba(128,128,128,.24) !important;
+    border-radius: 9px !important;
+}
+.training-project-bar button { min-height: 42px !important; }
+.project-strip { padding: 12px !important; border-radius: 10px !important; border: 1px solid var(--border-color-primary) !important; margin-bottom: 12px !important; }
+.global-toolbar { padding: 10px 12px !important; border: 1px solid var(--border-color-primary) !important; border-radius: 10px !important; background: var(--block-background-fill) !important; margin-bottom: 12px !important; }
+.global-toolbar button { min-height: 38px !important; }
+.tab-subtitle { opacity: .82; margin: 0 0 4px 0 !important; padding: 0 !important; }
+.quick-guide { border-radius: 9px !important; }
+.training-wide-action button { min-height: 42px !important; font-weight: 650 !important; }
+.training-orange button {
+    background: #f05a00 !important;
+    border-color: #f05a00 !important;
+    color: white !important;
+}
+.training-orange button:hover { filter: brightness(1.08) !important; }
+.training-red button {
+    background: #c91f1f !important;
+    border-color: #c91f1f !important;
+    color: white !important;
+}
+.training-panel {
+    padding: 14px !important;
+    border: 1px solid rgba(128,128,128,.22) !important;
+    border-radius: 9px !important;
+    background: rgba(128,128,128,.055) !important;
+}
+.training-status-card {
+    padding: 10px 14px !important;
+    border: 1px solid rgba(128,128,128,.22) !important;
+    border-radius: 8px !important;
+}
+.training-status-card textarea { min-height: 42px !important; }
+.training-card h4 { margin-bottom: 8px !important; }
+.fire-progress-card { padding: 12px 14px; border: 1px solid rgba(128,128,128,.22); border-radius: 9px; background: rgba(128,128,128,.055); }
+.fire-progress-head, .fire-progress-foot { display:flex; justify-content:space-between; gap:12px; }
+.fire-progress-title { font-weight:650; }
+.fire-progress-meta, .fire-progress-foot { opacity:.78; font-size:.9em; }
+.fire-train-track { width:100%; height:12px; margin:9px 0; overflow:hidden; border-radius:999px; background:rgba(128,128,128,.25); }
+.fire-train-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#2563eb,#60a5fa); transition:width .35s ease; }
+.global-status-panel {
+    margin: 10px 0 14px 0 !important;
+}
 """
 
 _MODEL = None
@@ -333,6 +390,24 @@ setTimeout(()=>{{if(!window._paused)b.scrollTop=b.scrollHeight;}},30);
     )
 
 
+GLOBAL_STATUS_LOCK = threading.RLock()
+GLOBAL_STATUS_LINE = "Ready: select a workflow to begin."
+
+
+def _publish_global_status(phase, message, level="info", detail=""):
+    """Replace the single shared status line used by every workflow tab."""
+    global GLOBAL_STATUS_LINE
+    normalized = re.sub(r"\s+", " ", str(message or "")).strip() or "Working."
+    phase = re.sub(r"\s+", " ", str(phase or "Activity")).strip() or "Activity"
+    detail = re.sub(r"\s+", " ", str(detail or "")).strip()
+    stamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{stamp}] {phase}: {normalized}"
+    if detail:
+        line += f" | {detail}"
+    with GLOBAL_STATUS_LOCK:
+        GLOBAL_STATUS_LINE = line
+
+
 def _shared_runtime_metrics() -> str:
     try:
         import torch
@@ -465,6 +540,7 @@ def save_emotion_description(name, description):
         raise gr.Error("Enter an emotion description to save.")
     dst = EMOTION_DESCRIPTIONS_DIR / f"{safe}.txt"
     dst.write_text(text + "\n", encoding="utf-8")
+    _publish_global_status("Emotion library", f"Saved emotion description: {dst.name}", "success")
     return (
         f"Saved emotion description: `{dst.name}`",
         refresh_emotion_description_dropdown(str(dst)),
@@ -474,11 +550,13 @@ def save_emotion_description(name, description):
 
 def delete_emotion_description(path):
     if not path:
+        _publish_global_status("Emotion library", "No emotion description selected.", "info")
         return "No emotion description selected.", refresh_emotion_description_dropdown(), refresh_emotion_description_dropdown()
     p = Path(path)
     if p.parent.resolve() != EMOTION_DESCRIPTIONS_DIR.resolve():
         raise gr.Error("Only descriptions inside emotion_descriptions/ can be deleted here.")
     p.unlink(missing_ok=True)
+    _publish_global_status("Emotion library", f"Deleted emotion description: {p.name}", "success")
     return f"Deleted emotion description: `{p.name}`", refresh_emotion_description_dropdown(), refresh_emotion_description_dropdown()
 
 
@@ -527,6 +605,7 @@ def _save_runtime_settings(use_bf16, use_gpt_latent, use_torch_compile, use_flas
         data["use_bf16"] = True
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _publish_global_status("Runtime", "CUDA runtime settings saved.", "success", f"BF16={data['use_bf16']} · GPT latent={data['use_gpt_latent']} · torch.compile={data['use_torch_compile']} · FlashAttention={data['use_flash_accel']}")
     return "Runtime settings saved."
 
 
@@ -579,7 +658,23 @@ def refresh_voice_dropdown(value=None, include_none=False):
     return gr.update(choices=choices, value=selected)
 
 
-def save_voice(audio, name):
+def _voice_transcript_path(audio_path):
+    path = Path(str(audio_path))
+    return path.with_suffix(".txt")
+
+
+def load_voice_transcript(audio_path):
+    if not audio_path or audio_path == NONE_SENTINEL:
+        return ""
+    path = Path(str(audio_path))
+    transcript = _voice_transcript_path(path)
+    try:
+        return transcript.read_text(encoding="utf-8", errors="ignore").strip() if transcript.is_file() else ""
+    except Exception:
+        return ""
+
+
+def save_voice(audio, name, transcript):
     src = _audio_path(audio)
     name = (name or "").strip()
     if not src or not Path(src).exists():
@@ -594,6 +689,13 @@ def save_voice(audio, name):
         suffix = ".wav"
     dst = VOICES_DIR / f"{safe}{suffix}"
     shutil.copy2(src, dst)
+    transcript_path = _voice_transcript_path(dst)
+    transcript = str(transcript or "").strip()
+    if transcript:
+        transcript_path.write_text(transcript + "\n", encoding="utf-8")
+    elif transcript_path.is_file():
+        transcript_path.unlink()
+    _publish_global_status("Reference library", f"Saved reference voice: {safe}", "success", "The audio and optional transcript are now available in Prep Samples and Inference.")
     return f"Saved reference voice: `{dst}`", refresh_voice_dropdown(str(dst), include_none=True), refresh_voice_dropdown(str(dst), include_none=True)
 
 
@@ -605,8 +707,10 @@ def delete_selected_voice(path):
         if p.parent.resolve() != VOICES_DIR.resolve():
             raise gr.Error("Only files inside the local voices library can be deleted here.")
         p.unlink(missing_ok=True)
+        _voice_transcript_path(p).unlink(missing_ok=True)
     except Exception as exc:
         raise gr.Error(f"Could not delete voice: {type(exc).__name__}: {exc}")
+    _publish_global_status("Reference library", f"Deleted reference voice: {p.name}", "success")
     return f"Deleted reference voice: `{p.name}`", refresh_voice_dropdown(include_none=True), refresh_voice_dropdown(include_none=True)
 
 
@@ -615,7 +719,9 @@ def delete_all_voices():
     for p in VOICES_DIR.iterdir():
         if p.is_file() and p.suffix.lower() in AUDIO_SUFFIXES:
             p.unlink(missing_ok=True)
+            _voice_transcript_path(p).unlink(missing_ok=True)
             count += 1
+    _publish_global_status("Reference library", f"Deleted {count} reference voice file(s).", "success")
     return f"Deleted {count} reference voice file(s).", refresh_voice_dropdown(include_none=True), refresh_voice_dropdown(include_none=True)
 
 
@@ -625,6 +731,7 @@ def delete_outputs():
         if p.is_file():
             p.unlink(missing_ok=True)
             count += 1
+    _publish_global_status("Outputs", f"Deleted {count} output audio file(s).", "success")
     return f"Deleted {count} output file(s)."
 
 
@@ -662,6 +769,7 @@ def unload_model():
                 torch.cuda.ipc_collect()
         except Exception:
             pass
+    _publish_global_status("Runtime", "Models unloaded and VRAM cleanup requested.", "success")
     return "Models unloaded and VRAM cleanup requested."
 
 
@@ -675,10 +783,13 @@ def delete_model():
 
 def _load_model(
     use_bf16: bool, use_gpt_latent: bool, use_torch_compile: bool,
-    use_flash_accel: bool, use_qwen_emo: bool,
+    use_flash_accel: bool, use_qwen_emo: bool, adapter_path: str = "",
 ):
     global _MODEL, _MODEL_OPTIONS
-    options = (bool(use_bf16), bool(use_gpt_latent), bool(use_torch_compile), bool(use_flash_accel), bool(use_qwen_emo))
+    adapter_path = str(adapter_path or "")
+    if adapter_path == NONE_SENTINEL:
+        adapter_path = ""
+    options = (bool(use_bf16), bool(use_gpt_latent), bool(use_torch_compile), bool(use_flash_accel), bool(use_qwen_emo), adapter_path)
     with _MODEL_LOCK:
         if not _model_files_present():
             raise RuntimeError("IndexTTS 2.5 model is missing. Restart with run.bat so the automatic model downloader can repair it.")
@@ -701,16 +812,99 @@ def _load_model(
         _MODEL = IndexTTS2(
             cfg_path=str(MODEL_DIR / "config.yaml"), model_dir=str(MODEL_DIR), device="cuda:0",
             use_bf16=options[0], use_cuda_kernel=False, use_gpt_latent=options[1],
-            use_torch_compile=options[2], use_deepspeed=False, use_accel=options[3], use_qwen_emo=options[4],
+            use_torch_compile=options[2], use_deepspeed=False,
+            # Build the accelerated snapshot only after PEFT has been attached.
+            use_accel=options[3] and not bool(adapter_path), use_qwen_emo=options[4],
         )
+        if adapter_path and adapter_path != NONE_SENTINEL:
+            adapter = Path(adapter_path)
+            if not (adapter / "adapter_config.json").is_file():
+                raise RuntimeError(f"LoRA adapter is missing adapter_config.json: {adapter}")
+            from peft import PeftModel
+            loaded = PeftModel.from_pretrained(_MODEL.gpt.gpt, str(adapter), is_trainable=False)
+            if options[3]:
+                # IndexTTS's AccelInferenceEngine snapshots self.gpt.state_dict()
+                # during post_init. Merge first so the snapshot contains LoRA.
+                _MODEL.gpt.gpt = loaded.merge_and_unload()
+                _MODEL.gpt.use_accel = True
+                _MODEL.gpt.accel_engine = None
+                _MODEL.gpt.post_init_gpt2_config(
+                    use_deepspeed=False, kv_cache=True, half=bool(options[0])
+                )
+            else:
+                _MODEL.gpt.gpt = loaded
+            print(f"[adapter] Loaded IndexTTS 2.5 LoRA: {adapter}", flush=True)
         _MODEL_OPTIONS = options
         return _MODEL
 
 
+def _resolve_inference_prompt(quick_sample, prompt_audio):
+    if quick_sample and quick_sample != NONE_SENTINEL:
+        saved_prompt = Path(str(quick_sample))
+        prompt = str(saved_prompt) if saved_prompt.exists() else None
+        if not prompt:
+            raise gr.Error("The selected Quick Sample no longer exists. Choose another saved sample or select None for a custom upload.")
+        return prompt
+    prompt = _audio_path(prompt_audio)
+    if not prompt or not Path(prompt).exists():
+        raise gr.Error("Quick Sample is set to None. Upload or record a custom reference audio file before generating.")
+    return prompt
+
+
+def transcribe_inference_reference(quick_sample, prompt_audio, model_size, language, batch_size=8, progress=gr.Progress()):
+    """Transcribe the exact reference audio that Single Inference will use."""
+    prompt = _resolve_inference_prompt(quick_sample, prompt_audio)
+    _publish_global_status("Reference transcription", "Loading Faster-Whisper for the selected reference audio.", "working", f"Model: {model_size or 'large-v3'}")
+    try:
+        import torch
+        from faster_whisper import WhisperModel
+        use_cuda = bool(torch.cuda.is_available())
+        progress(0.08, desc="Loading Faster-Whisper")
+        model = WhisperModel(
+            str(model_size or "large-v3"),
+            device="cuda" if use_cuda else "cpu",
+            compute_type="float16" if use_cuda else "int8",
+        )
+        progress(0.35, desc="Transcribing reference audio")
+        transcribe_kwargs = dict(
+            language=None if not language or language == "Auto-detect" else str(language),
+            vad_filter=True,
+        )
+        if int(batch_size or 1) > 1:
+            from faster_whisper import BatchedInferencePipeline
+            segments, _ = BatchedInferencePipeline(model=model).transcribe(
+                str(prompt), batch_size=int(batch_size), **transcribe_kwargs
+            )
+        else:
+            segments, _ = model.transcribe(str(prompt), **transcribe_kwargs)
+        result = " ".join(segment.text.strip() for segment in segments).strip()
+        del model
+        if use_cuda:
+            torch.cuda.empty_cache()
+        if not result:
+            raise gr.Error("Whisper returned an empty reference transcript.")
+        progress(1.0, desc="Reference transcript ready")
+        _publish_global_status("Reference transcription", "Reference transcript ready.", "success", f"{len(result)} characters transcribed from {Path(prompt).name}.")
+        return result
+    except gr.Error:
+        raise
+    except Exception as exc:
+        _publish_global_status("Reference transcription", f"Reference transcription failed: {type(exc).__name__}", "error", str(exc))
+        raise gr.Error(f"Reference transcription failed: {type(exc).__name__}: {exc}")
+
+
+def transcribe_audio_reference(audio_path, model_size, language, batch_size=8, progress=gr.Progress()):
+    """Shared Prep Samples entry point using the same FireRed/MOSS ASR panel."""
+    return transcribe_inference_reference(
+        NONE_SENTINEL, audio_path, model_size, language, batch_size, progress=progress
+    )
+
+
 def generate(
-    quick_sample, prompt_audio, text, language, emotion_mode, emotion_audio, emotion_alpha,
+    quick_sample, prompt_audio, text, reference_transcript, reference_auto_transcribe,
+    reference_whisper_model, reference_whisper_language, reference_whisper_batch, adapter_path, language, emotion_mode, emotion_audio, emotion_alpha,
     happy, angry, sad, afraid, disgusted, melancholic, surprised, calm,
-    emotion_text, random_emotion, duration_factor, interval_silence,
+    emotion_text, random_emotion, duration_factor, interval_silence, chunk_mode, chunk_silence,
     text_normalization, max_text_tokens, do_sample, top_p, top_k, temperature,
     num_beams, repetition_penalty, length_penalty, max_mel_tokens,
     use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, save_outputs,
@@ -719,29 +913,34 @@ def generate(
 ):
     progress(0.02, desc="Validating inference inputs")
     print("[ui] Preparing single inference", flush=True)
+    _publish_global_status("Single inference", "Validating reference audio and target text.", "working")
     # Quick Sample is authoritative when a saved library entry is selected.
     # The audio widget is used only when Quick Sample == None. This avoids
     # false "missing sample" validation caused by UI preview/update timing.
-    if quick_sample and quick_sample != NONE_SENTINEL:
-        saved_prompt = Path(str(quick_sample))
-        prompt = str(saved_prompt) if saved_prompt.exists() else None
-        if not prompt:
-            raise gr.Error("The selected Quick Sample no longer exists. Choose another saved sample or select None for a custom upload.")
-    else:
-        prompt = _audio_path(prompt_audio)
-        if not prompt or not Path(prompt).exists():
-            raise gr.Error("Quick Sample is set to None. Upload or record a custom reference audio file before generating.")
+    prompt = _resolve_inference_prompt(quick_sample, prompt_audio)
     text = (text or "").strip()
     if not text:
         raise gr.Error("Enter target text to synthesize.")
+    chunk_mode = chunk_mode if chunk_mode in CHUNK_CHOICES else "None"
+    chunks = split_long_text(text, chunk_mode)
+    if not chunks:
+        raise gr.Error("The target text did not produce any usable chunks.")
+
+    reference_transcript = (reference_transcript or "").strip()
+    if bool(reference_auto_transcribe) and not reference_transcript:
+        reference_transcript = transcribe_inference_reference(
+            quick_sample, prompt_audio, reference_whisper_model, reference_whisper_language,
+            reference_whisper_batch, progress=progress,
+        )
 
     lang = LANGUAGES.get(language, "EN")
     use_qwen = emotion_mode == "Emotion description"
     progress(0.12, desc="Loading IndexTTS 2.5 runtime")
     print("[ui] Loading IndexTTS 2.5 runtime", flush=True)
     tts = _load_model(
-        use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, use_qwen,
+        use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, use_qwen, adapter_path,
     )
+    _publish_global_status("Single inference", "Model loaded; synthesizing target speech.", "working", f"Language: {language} · Adapter: {'None' if not adapter_path or adapter_path == NONE_SENTINEL else Path(str(adapter_path)).parent.name}")
     progress(0.28, desc="Preparing conditioning")
 
     emo_audio = None
@@ -766,21 +965,24 @@ def generate(
         out.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        progress(0.34, desc="Synthesizing audio")
-        print(f"[ui-progress] Synthesizing single utterance | chars={len(text)} | language={lang}", flush=True)
+        explicit_chunks = chunk_mode != "None" and len(chunks) > 1
+        progress(0.34, desc="Preparing text chunks" if explicit_chunks else "Synthesizing audio")
+        print(
+            f"[ui-progress] Synthesizing {'text chunks' if explicit_chunks else 'single utterance'} "
+            f"| chunks={len(chunks)} | chars={len(text)} | language={lang}",
+            flush=True,
+        )
         start_time = time.perf_counter()
-        result = tts.infer(
+        common_infer_kwargs = dict(
             spk_audio_prompt=prompt,
-            text=text,
-            output_path=str(out),
             lang=lang,
+            reference_text=reference_transcript,
             emo_audio_prompt=emo_audio,
             emo_alpha=float(emotion_alpha),
             emo_vector=emo_vector,
             use_emo_text=use_emo_text,
             emo_text=emo_text,
             use_random=bool(random_emotion),
-            interval_silence=int(interval_silence),
             verbose=True,
             max_text_tokens_per_segment=int(max_text_tokens),
             stream_return=False,
@@ -795,32 +997,67 @@ def generate(
             length_penalty=float(length_penalty),
             max_mel_tokens=int(max_mel_tokens),
         )
+        result = None
+        chunk_temp_dir = None
+        try:
+            if explicit_chunks:
+                chunk_temp_dir = Path(tempfile.mkdtemp(prefix="inference_chunks_", dir=str(TEMP_DIR)))
+                generated_chunks = []
+                for index, chunk in enumerate(chunks, 1):
+                    progress(0.34 + 0.50 * ((index - 1) / max(len(chunks), 1)), desc=f"Synthesizing chunk {index}/{len(chunks)}")
+                    chunk_path = chunk_temp_dir / f"chunk_{index:04d}.wav"
+                    result = tts.infer(
+                        text=chunk,
+                        output_path=str(chunk_path),
+                        interval_silence=0,
+                        **common_infer_kwargs,
+                    )
+                    actual_chunk = chunk_path if chunk_path.exists() else (Path(str(result)) if result else chunk_path)
+                    if not actual_chunk.exists():
+                        raise RuntimeError(f"IndexTTS did not create audio for chunk {index}.")
+                    generated_chunks.append(actual_chunk)
+                progress(0.86, desc="Joining generated chunks")
+                _concat_wavs(generated_chunks, out, max(0.0, float(chunk_silence)))
+            else:
+                progress(0.40, desc="Synthesizing audio")
+                result = tts.infer(
+                    text=text,
+                    output_path=str(out),
+                    interval_silence=int(interval_silence),
+                    **common_infer_kwargs,
+                )
+        finally:
+            if chunk_temp_dir is not None:
+                shutil.rmtree(chunk_temp_dir, ignore_errors=True)
         progress(0.92, desc="Saving output WAV")
-        actual = out if out.exists() else Path(str(result))
+        actual = out if out.exists() else (Path(str(result)) if result else out)
         if not actual.exists():
             raise RuntimeError("IndexTTS returned without creating an output WAV.")
         saved = str(actual) if save_outputs else "Preview only (not persisted in outputs/)"
         status = (
             f"Generation complete.\nLanguage: {language} ({lang})\nEmotion mode: {emotion_mode}\n"
-            f"Duration factor: {duration_factor}\nSaved WAV: {saved}"
+            f"Duration factor: {duration_factor}\nChunk mode: {chunk_mode} ({len(chunks)} chunk{'s' if len(chunks) != 1 else ''})\n"
+            f"Saved WAV: {saved}"
         )
         elapsed = time.perf_counter() - start_time
         print(f"[ui] Generation complete in {elapsed:.2f}s | {actual}", flush=True)
         progress(0.97, desc="Completion notification")
         _play_completion_sound()
         progress(1.0, desc="Done")
+        _publish_global_status("Single inference", "Generation complete.", "success", f"Saved WAV: {saved}")
         return str(actual), saved, status
     except Exception as exc:
+        _publish_global_status("Single inference", f"Generation failed: {type(exc).__name__}", "error", str(exc))
         raise gr.Error(f"Generation failed: {type(exc).__name__}: {exc}")
 
 
 def set_prep_voice(path):
     if not path or path == NONE_SENTINEL:
-        return gr.update(value=None, interactive=True, sources=["upload", "microphone"])
+        return gr.update(value=None, interactive=True, sources=["upload", "microphone"]), ""
     p = Path(path)
     if not p.exists():
-        return gr.update(value=None, interactive=True, sources=["upload", "microphone"])
-    return gr.update(value=str(p), interactive=False, sources=[])
+        return gr.update(value=None, interactive=True, sources=["upload", "microphone"]), ""
+    return gr.update(value=str(p), interactive=False, sources=[]), load_voice_transcript(str(p))
 
 
 def set_voice_inference(path):
@@ -831,11 +1068,11 @@ def set_voice_inference(path):
     the dropdown remains the source of truth.
     """
     if not path or path == NONE_SENTINEL:
-        return gr.update(value=None, interactive=True, sources=["upload", "microphone"])
+        return gr.update(value=None, interactive=True, sources=["upload", "microphone"]), ""
     p = Path(path)
     if not p.exists():
-        return gr.update(value=None, interactive=True, sources=["upload", "microphone"])
-    return gr.update(value=str(p), interactive=False, sources=[])
+        return gr.update(value=None, interactive=True, sources=["upload", "microphone"]), ""
+    return gr.update(value=str(p), interactive=False, sources=[]), load_voice_transcript(str(p))
 
 
 
@@ -980,13 +1217,14 @@ def _concat_wavs(wav_paths, output_path, silence_s):
                 out.writeframes(silence)
 
 
-def generate_dialogue(language, duration_factor, interval_silence, text_normalization, max_text_tokens,
+def generate_dialogue(adapter_path, language, duration_factor, interval_silence, text_normalization, max_text_tokens,
                       do_sample, top_p, top_k, temperature, num_beams, repetition_penalty, length_penalty, max_mel_tokens,
                       use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, dialogue_silence, dialogue_row_count, *values,
                       # Do NOT enable track_tqdm here: it breaks IndexTTS FlowMatching tqdm on Gradio 5.x.
                       progress=gr.Progress()):
     progress(0.02, desc="Validating dialogue")
     print("[ui] Preparing Dialogue Builder inference", flush=True)
+    _publish_global_status("Dialogue inference", "Validating dialogue turns.", "working")
     # Per row: speaker, text, emotion_mode, vector_preset, description_path.
     rows = _dialogue_unpack(values)
     active = [r for r in rows[:max(1, min(int(dialogue_row_count), DIALOGUE_MAX_SEGMENTS))] if str(r[1] or "").strip()]
@@ -994,7 +1232,8 @@ def generate_dialogue(language, duration_factor, interval_silence, text_normaliz
         raise gr.Error("Dialogue has no turns with text.")
     needs_qwen = any(r[2] == "Emotion Description" for r in active)
     progress(0.10, desc="Loading IndexTTS 2.5 runtime")
-    tts = _load_model(use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, needs_qwen)
+    tts = _load_model(use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, needs_qwen, adapter_path)
+    _publish_global_status("Dialogue inference", f"Generating {len(active)} dialogue turn(s).", "working", f"Language: {language}")
     lang = LANGUAGES.get(language, "EN")
     temp_dir = TEMP_DIR / f"dialogue_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1033,7 +1272,11 @@ def generate_dialogue(language, duration_factor, interval_silence, text_normaliz
         _play_completion_sound()
         print(f"[ui] Dialogue complete | turns={len(active)} | {out}", flush=True)
         progress(1.0, desc="Done")
+        _publish_global_status("Dialogue inference", "Dialogue generation complete.", "success", f"Generated {len(active)} turn(s) to {out.name}.")
         return str(out), str(out), f"Dialogue complete. Generated {len(active)} turns."
+    except Exception as exc:
+        _publish_global_status("Dialogue inference", f"Dialogue generation failed: {type(exc).__name__}", "error", str(exc))
+        raise
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -1043,6 +1286,580 @@ def _ensure_model_before_ui():
     if rc != 0:
         raise RuntimeError("Automatic IndexTTS 2.5 model setup failed. Review the console output and retry.")
 
+
+
+
+
+def _native_dialog(kind: str, current: str = "", title: str = "", filetypes=None) -> str:
+    """Open the same small native Windows picker used by the training workflows."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        root.update()
+
+        initial = Path(str(current or "")).expanduser()
+        initial_dir = str(initial.parent if initial.is_file() else initial if initial.is_dir() else ROOT)
+
+        if kind == "directory":
+            selected = filedialog.askdirectory(
+                parent=root,
+                title=title or "Select folder",
+                initialdir=initial_dir,
+                mustexist=True,
+            )
+        else:
+            selected = filedialog.askopenfilename(
+                parent=root,
+                title=title or "Select file",
+                initialdir=initial_dir,
+                filetypes=filetypes or [("All files", "*.*")],
+            )
+        root.destroy()
+        return str(selected or current or "")
+    except Exception as exc:
+        print(f"[ui] Native browser unavailable: {type(exc).__name__}: {exc}", flush=True)
+        return str(current or "")
+
+
+def browse_dataset_folder(current=""):
+    return _native_dialog("directory", current, "Select training audio folder")
+
+
+def browse_eval_audio(current=""):
+    return _native_dialog(
+        "file",
+        current,
+        "Select evaluation reference audio",
+        [
+            ("Audio files", "*.wav *.flac *.mp3 *.ogg *.m4a *.aac *.wma"),
+            ("WAV", "*.wav"),
+            ("FLAC", "*.flac"),
+            ("All files", "*.*"),
+        ],
+    )
+
+
+def browse_checkpoint_folder(current=""):
+    selected = _native_dialog("directory", current, "Select LoRA checkpoint folder")
+    return str(selected or current or NONE_SENTINEL)
+
+
+def _training_projects():
+    from indextts_training.dataset import list_projects
+    return list_projects(str(TRAINING_DIR))
+
+def _training_project_choices():
+    return [(x,x) for x in _training_projects()]
+
+def _adapter_choices():
+    """Return the final adapter and every saved training checkpoint.
+
+    The trainer writes PEFT adapters below each output directory as
+    ``checkpoint-step-*`` plus ``final_adapter``.  Inference can load any of
+    those folders, so the selector must expose the complete set instead of
+    collapsing a project to its final export.
+    """
+    choices = [("None", NONE_SENTINEL)]
+    if not TRAINING_OUTPUTS_DIR.is_dir():
+        return choices
+
+    for project_dir in sorted(TRAINING_OUTPUTS_DIR.iterdir(), key=lambda path: path.name.lower()):
+        if not project_dir.is_dir():
+            continue
+        adapter_dirs = []
+        final_dir = project_dir / "final_adapter"
+        if final_dir.is_dir():
+            adapter_dirs.append(final_dir)
+        adapter_dirs.extend(
+            checkpoint
+            for checkpoint in sorted(project_dir.glob("checkpoint-*"), key=lambda path: path.name.lower())
+            if checkpoint.is_dir()
+        )
+        for adapter_dir in adapter_dirs:
+            if not (adapter_dir / "adapter_config.json").is_file():
+                continue
+            if adapter_dir.name == "final_adapter":
+                label = f"{project_dir.name} · final"
+            else:
+                label = f"{project_dir.name} · {adapter_dir.name}"
+            choices.append((label, str(adapter_dir.resolve())))
+    return choices
+
+def refresh_adapters(selected=NONE_SENTINEL):
+    choices=_adapter_choices(); values={value for _,value in choices}
+    return gr.update(choices=choices, value=selected if selected in values else NONE_SENTINEL)
+
+def scan_training_dataset(folder):
+    from indextts_training.dataset import scan_dataset, dataset_summary
+    _publish_global_status("Dataset analysis", "Scanning audio files and transcript sidecars.", "working", str(folder or "No source folder selected."))
+    try:
+        rows,stats=scan_dataset(folder)
+    except Exception as exc:
+        _publish_global_status("Dataset analysis", f"Dataset scan failed: {type(exc).__name__}", "error", str(exc))
+        raise
+    _publish_global_status("Dataset analysis", "Dataset analysis complete.", "success", dataset_summary(stats))
+    return dataset_summary(stats), json.dumps(stats, ensure_ascii=False)
+
+def prepare_training_dataset(folder, project, selected_project, language, transcribe, whisper_model, whisper_lang, asr_batch=8, progress=gr.Progress()):
+    from indextts_training.dataset import prepare_dataset, dataset_summary
+    project = str(project or selected_project or "").strip()
+    if not project:
+        raise gr.Error("Create or select a Training Project first.")
+    phase = "Dataset transcription" if bool(transcribe) else "Dataset preparation"
+    _publish_global_status(phase, "Scanning the dataset and calculating automatic clip bounds.", "working", f"Project: {project}")
+    progress(.05,desc='Scanning source dataset')
+    try:
+        if bool(transcribe):
+            _publish_global_status("Dataset transcription", "Transcribing missing transcript sidecars with Faster-Whisper.", "working", f"Model: {whisper_model or 'large-v3'} · Language: {whisper_lang or 'Auto-detect'}")
+        meta=prepare_dataset(folder,project,LANGUAGES.get(language,language),None,None,bool(transcribe),whisper_model,whisper_lang,str(TRAINING_DIR))
+    except Exception as exc:
+        _publish_global_status(phase, f"Dataset preparation failed: {type(exc).__name__}", "error", str(exc))
+        raise
+    progress(1.0,desc='Prepared')
+    _play_completion_sound()
+    summary = dataset_summary(meta.get('stats',{}))
+    _publish_global_status("Dataset preparation", "Prepared dataset and project link are ready.", "success", summary)
+    linked_status=f"Loaded project: {meta['project_name']} · Prepared dataset linked"
+    return (summary,
+            gr.update(choices=_training_project_choices(),value=meta['project_name']),
+            meta['manifest'],
+            gr.update(choices=_training_project_choices(),value=meta['project_name']),
+            meta['manifest'], linked_status)
+
+def load_training_project(name):
+    from indextts_training.dataset import load_project, dataset_summary
+    meta=load_project(name,str(TRAINING_DIR)) if name else {}
+    code=str(meta.get('language','EN')).upper()
+    label=next((name for name, value in LANGUAGES.items() if value == code), 'English')
+    if name:
+        _publish_global_status("Dataset project", f"Loaded project: {name}.", "success", "Prepared dataset and language controls synchronized.")
+    else:
+        _publish_global_status("Dataset project", "No project selected.", "info")
+    return meta.get('source_folder',''), meta.get('manifest',''), dataset_summary(meta.get('stats',{})), label
+
+def sync_training_project_selection(name):
+    from indextts_training.dataset import load_project
+    meta=load_project(name, str(TRAINING_DIR)) if name else {}
+    manifest=str(meta.get('manifest') or '')
+    status=f"Loaded project: {name} · Prepared dataset linked" if name else "No project selected."
+    _publish_global_status("Dataset project", status, "success" if name else "info", manifest or "Prepare the dataset to create its manifest.")
+    return gr.update(choices=_training_project_choices(), value=name or None), manifest, status
+
+
+def refresh_training_project_dropdown(current=None):
+    choices = _training_project_choices()
+    valid = {v for _, v in choices}
+    return gr.update(choices=choices, value=current if current in valid else None)
+
+
+
+def _training_project_file(project_name):
+    safe = _safe_name(project_name)
+    return TRAINING_DIR / "projects" / safe / "project.json" if safe else None
+
+
+
+def create_dataset_project(project_name):
+    safe = _safe_name(project_name)
+    if not safe:
+        raise gr.Error("Enter a New Project Name.")
+    project_dir = TRAINING_DIR / "projects" / safe
+    project_dir.mkdir(parents=True, exist_ok=True)
+    path = project_dir / "project.json"
+    if not path.exists():
+        path.write_text(
+            json.dumps({"project_name": safe, "source_folder": "", "manifest": "", "language": "EN", "stats": {}},
+                       indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    choices = _training_project_choices()
+    _publish_global_status("Dataset project", f"Project created: {safe}", "success", "Choose a source folder and run Build / Scan Dataset.")
+    return gr.update(choices=choices, value=safe), safe, f"Project created: {safe}"
+
+
+def save_dataset_project(project, new_name, source_folder, manifest, language):
+    name = project or new_name
+    safe = _safe_name(name)
+    if not safe:
+        raise gr.Error("Create or select a project first.")
+    path = _training_project_file(safe)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    payload.update({
+        "project_name": safe,
+        "source_folder": str(source_folder or ""),
+        "manifest": str(manifest or ""),
+        "language": LANGUAGES.get(language, language),
+    })
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    choices = _training_project_choices()
+    _publish_global_status("Dataset project", f"Project saved: {safe}", "success", f"Prepared manifest: {manifest or 'not prepared yet'}")
+    return gr.update(choices=choices, value=safe), safe, f"Project saved: {safe}"
+
+
+def clone_dataset_project(project_name):
+    from indextts_training.dataset import clone_project, dataset_summary
+    try:
+        meta=clone_project(project_name,str(TRAINING_DIR))
+    except Exception as exc:
+        _publish_global_status("Dataset project", f"Project clone failed: {type(exc).__name__}", "error", str(exc))
+        raise gr.Error(f"Could not clone project: {exc}")
+    new_name=str(meta.get('project_name',''))
+    code=str(meta.get('language','EN')).upper()
+    language_label=next((label for label,value in LANGUAGES.items() if value==code), 'English')
+    choices=_training_project_choices()
+    manifest=str(meta.get('manifest') or '')
+    _publish_global_status("Dataset project", f"Project cloned: {new_name}", "success", "Project fields and prepared dataset copied; training outputs were not copied.")
+    return (
+        gr.update(choices=choices,value=new_name), new_name,
+        meta.get('source_folder',''), manifest, dataset_summary(meta.get('stats',{})), language_label,
+        gr.update(choices=choices,value=new_name), manifest,
+        f"Project cloned: {new_name}",
+    )
+
+
+def save_training_project(
+    project_name, source_folder, manifest, dataset_language,
+    adapter_name, vram, mode, steps, epochs, save_steps, save_epochs,
+    rank, alpha, dropout, lr, batch, grad_accum, grad_clip, semantic_loss_weight,
+    phonetic_ctc_enabled, phonetic_ctc_weight, resume,
+    eval_enabled, eval_text, eval_reference, eval_reference_transcript,
+    eval_language, eval_whisper_model, eval_whisper_language,
+):
+    safe = _safe_name(project_name)
+    if not safe:
+        raise gr.Error("Enter or select a Training Project name.")
+
+    project_dir = TRAINING_DIR / "projects" / safe
+    project_dir.mkdir(parents=True, exist_ok=True)
+    path = project_dir / "project.json"
+
+    payload = {}
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+
+    # Keep prepared-dataset metadata intact and update the editable project fields.
+    payload["project_name"] = safe
+    if source_folder:
+        payload["source_folder"] = str(source_folder)
+    if manifest:
+        payload["manifest"] = str(manifest)
+    payload["language"] = LANGUAGES.get(dataset_language, dataset_language)
+
+    persisted_eval = ""
+    if eval_reference and Path(str(eval_reference)).is_file():
+        src = Path(str(eval_reference))
+        target = project_dir / f"eval_reference{src.suffix.lower() or '.wav'}"
+        if src.resolve() != target.resolve():
+            shutil.copy2(src, target)
+        persisted_eval = str(target.resolve())
+    elif payload.get("training", {}).get("eval_reference"):
+        old = Path(str(payload["training"]["eval_reference"]))
+        if old.is_file():
+            persisted_eval = str(old.resolve())
+
+    payload["training"] = {
+        "adapter_name": str(adapter_name or safe),
+        "vram_preset": str(vram),
+        "mode": str(mode),
+        "training_steps": int(steps),
+        "training_epochs": int(epochs),
+        "save_steps": int(save_steps),
+        "save_epochs": int(save_epochs),
+        "lora_rank": int(rank),
+        "lora_alpha": int(alpha),
+        "lora_dropout": float(dropout),
+        "learning_rate": float(lr),
+        "micro_batch": int(batch),
+        "grad_accum": int(grad_accum),
+        "grad_clip": float(grad_clip),
+        # The acoustic-only LoRA profile deliberately disables auxiliary text
+        # and pronunciation objectives. Keep the old keys for project-file
+        # compatibility, but persist their inactive values so an old project
+        # cannot silently reactivate Whisper/CTC training.
+        "semantic_loss_weight": 0.0,
+        "phonetic_ctc_enabled": False,
+        "phonetic_ctc_weight": 0.0,
+        "differentiable_asr_enabled": False,
+        "differentiable_asr_weight": 0.0,
+        "differentiable_asr_model": "large-v3",
+        "asr_cfm_steps": 4,
+        "asr_cfm_temperature": 1.0,
+        "resume_checkpoint": "" if not resume or resume == NONE_SENTINEL else str(resume),
+        "eval_enabled": bool(eval_enabled),
+        "eval_text": str(eval_text or ""),
+        "eval_reference": persisted_eval,
+        "eval_reference_transcript": str(eval_reference_transcript or ""),
+        "eval_language": str(eval_language),
+        "eval_whisper_model": str(eval_whisper_model),
+        "eval_whisper_language": str(eval_whisper_language),
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    choices = _training_project_choices()
+    _publish_global_status("LoRA project", f"Training project saved: {safe}", "success", f"Prepared dataset: {manifest or 'not linked'}")
+    return (
+        gr.update(choices=choices, value=safe),
+        gr.update(choices=choices, value=safe),
+        f"Project saved: {safe}",
+    )
+
+
+def clone_lora_project(project_name):
+    from indextts_training.dataset import clone_project
+    try:
+        meta=clone_project(project_name,str(TRAINING_DIR))
+    except Exception as exc:
+        _publish_global_status("LoRA project", f"Project clone failed: {type(exc).__name__}", "error", str(exc))
+        raise gr.Error(f"Could not clone project: {exc}")
+    new_name=str(meta.get('project_name',''))
+    choices=_training_project_choices()
+    loaded=load_full_training_project(new_name)
+    _publish_global_status("LoRA project", f"Project cloned: {new_name}", "success", "All project settings were copied; training outputs were not copied.")
+    return (
+        gr.update(choices=choices,value=new_name), gr.update(choices=choices,value=new_name),
+        new_name, str(meta.get('manifest') or ''), *loaded,
+        f"Project cloned: {new_name}",
+    )
+
+
+def load_full_training_project(project_name):
+    from indextts_training.dataset import load_project, dataset_summary
+
+    meta = load_project(project_name, str(TRAINING_DIR)) if project_name else {}
+    tr = dict(meta.get("training") or {})
+    language_code = meta.get("language", "EN")
+    language_label = next((label for label, code in LANGUAGES.items() if code == language_code), language_code)
+
+    mode_value = tr.get("mode", "Steps")
+    resume_value = tr.get("resume_checkpoint") or NONE_SENTINEL
+    eval_language_code = tr.get("eval_language", "EN")
+    eval_language_label = next(
+        (label for label, code in LANGUAGES.items() if code == eval_language_code),
+        eval_language_code if eval_language_code in LANGUAGES else "English",
+    )
+    if project_name:
+        _publish_global_status("LoRA project", f"Loaded project: {project_name}.", "success", f"Prepared dataset: {meta.get('manifest') or 'not linked'}")
+    else:
+        _publish_global_status("LoRA project", "No project selected.", "info")
+    return (
+        meta.get("source_folder", ""),
+        meta.get("manifest", ""),
+        dataset_summary(meta.get("stats", {})),
+        language_label,
+        tr.get("adapter_name", project_name or ""),
+        tr.get("vram_preset", "24 GB"),
+        mode_value,
+        int(tr.get("training_steps", 1500)),
+        int(tr.get("training_epochs", 20)),
+        int(tr.get("save_steps", 150)),
+        int(tr.get("save_epochs", 2)),
+        int(tr.get("lora_rank", 16)),
+        int(tr.get("lora_alpha", 32)),
+        float(tr.get("lora_dropout", 0.05)),
+        float(tr.get("learning_rate", 0.0002)),
+        int(tr.get("micro_batch", 1)),
+        int(tr.get("grad_accum", 8)),
+        float(tr.get("grad_clip", 1.0)),
+        0.0,
+        False,
+        0.0,
+        gr.update(
+            choices=[("None", NONE_SENTINEL), *_resume_choices(tr.get("adapter_name", project_name or ""))],
+            value=resume_value,
+        ),
+        bool(tr.get("eval_enabled", False)),
+        tr.get("eval_text", ""),
+        tr.get("eval_reference") or None,
+        tr.get("eval_reference_transcript", ""),
+        eval_language_label,
+        tr.get("eval_whisper_model", "large-v3"),
+        tr.get("eval_whisper_language", "Auto-detect"),
+        gr.update(visible=mode_value == "Steps"),
+        gr.update(visible=mode_value == "Epochs"),
+        f"Loaded project: {project_name}" if project_name else "No project selected.",
+    )
+
+
+def delete_training_project(project_name):
+    safe = _safe_name(project_name)
+    if not safe:
+        _publish_global_status("LoRA project", "No project selected.", "info")
+        return gr.update(choices=_training_project_choices(), value=None), gr.update(choices=_training_project_choices(), value=None), "No project selected."
+    project_dir = TRAINING_DIR / "projects" / safe
+    prepared_dir = TRAINING_DIR / "datasets" / safe
+    if project_dir.is_dir():
+        shutil.rmtree(project_dir)
+    if prepared_dir.is_dir():
+        shutil.rmtree(prepared_dir)
+    # Training outputs are intentionally retained as checkpoints/adapters.
+    choices = _training_project_choices()
+    _publish_global_status("LoRA project", f"Project deleted: {safe}.", "success", "Existing training outputs and adapters were kept.")
+    return (
+        gr.update(choices=choices, value=None),
+        gr.update(choices=choices, value=None),
+        f"Project deleted: {safe}. Existing training outputs were kept.",
+    )
+
+
+def transcribe_training_eval(audio_path, model_size, language, batch_size=8, progress=gr.Progress()):
+    if not audio_path or not Path(str(audio_path)).is_file():
+        raise gr.Error("Select an Eval Reference Audio file first.")
+    from faster_whisper import WhisperModel
+    _publish_global_status("Eval transcription", "Loading Faster-Whisper for evaluation audio.", "working", f"Model: {model_size or 'large-v3'} · Language: {language or 'Auto-detect'}")
+    try:
+        progress(0.05, desc="Loading Faster-Whisper")
+        model = WhisperModel(str(model_size or "large-v3"), device="cuda", compute_type="float16")
+        progress(0.30, desc="Transcribing evaluation reference")
+        segments, _ = model.transcribe(
+            str(audio_path),
+            language=None if not language or language == "Auto-detect" else str(language),
+            vad_filter=True,
+        )
+        result = " ".join(segment.text.strip() for segment in segments).strip()
+        del model
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        progress(1.0, desc="Done")
+        _play_completion_sound()
+        _publish_global_status("Eval transcription", "Evaluation reference transcription complete.", "success", f"{len(result)} characters transcribed.")
+        return result, "Evaluation reference transcription complete."
+    except Exception as exc:
+        _publish_global_status("Eval transcription", f"Evaluation transcription failed: {type(exc).__name__}", "error", str(exc))
+        raise
+
+
+def training_autotune(project, vram):
+    from indextts_training.dataset import load_project
+    meta=load_project(project,str(TRAINING_DIR)); st=meta.get('stats',{}); n=max(1,int(st.get('valid',1))); mins=float(st.get('total_seconds',0))/60
+    rank=16 if mins<20 else 32; alpha=rank*2; lr=2e-4 if mins<30 else 1e-4; accum=8 if str(vram).startswith('24') else 4
+    steps=max(500,min(4000,int(900+mins*45)))
+    save=max(100,steps//10)
+    message=f'AutoTune: {n} samples / {mins:.1f} min → Steps {steps}, r={rank}, lr={lr:g}, accumulation={accum}.'
+    _publish_global_status("LoRA AutoTune", "Training preset calculated.", "success", message)
+    return 'Steps',steps,20,save,2,rank,alpha,lr,accum,message
+
+def training_mode_visibility(mode):
+    return gr.update(visible=mode=='Steps'), gr.update(visible=mode=='Epochs')
+
+def _resume_choices(adapter):
+    root=TRAINING_OUTPUTS_DIR/_safe_name(adapter)
+    vals=[]
+    if root.is_dir():
+        vals=[str(p) for p in sorted(root.glob('checkpoint-*')) if p.is_dir()]
+    return [(Path(x).name,x) for x in vals]
+
+def refresh_resume(adapter,current=None):
+    ch=_resume_choices(adapter); valid={v for _,v in ch}; return gr.update(choices=[('None',NONE_SENTINEL),*ch],value=current if current in valid else NONE_SENTINEL)
+
+def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_steps,save_epochs,rank,alpha,dropout,lr,batch,grad_accum,grad_clip,semantic_loss_weight,phonetic_ctc_enabled,phonetic_ctc_weight,resume,eval_enabled,eval_text,eval_reference,eval_reference_transcript,eval_language):
+    from indextts_training.dataset import load_project
+    from indextts_training import TRAINING_MANAGER
+    meta=load_project(project,str(TRAINING_DIR)) if project else {}
+    manifest=str(manifest or meta.get('manifest') or '').strip()
+    if not manifest or not Path(manifest).is_file():
+        _publish_global_status("LoRA training", "A valid prepared dataset is required before training.", "error")
+        raise gr.Error('Prepare/select a valid dataset project first.')
+    safe=_safe_name(adapter)
+    if not safe:
+        _publish_global_status("LoRA training", "An adapter name is required before training.", "error")
+        raise gr.Error('Enter an Adapter Name.')
+    out=TRAINING_OUTPUTS_DIR/safe
+    cfg={'manifest':manifest,'model_dir':str(MODEL_DIR),'output_dir':str(out),'mode':mode,'steps':int(steps),'epochs':int(epochs),
+         'save_every':int(save_steps if mode=='Steps' else max(1,int(save_epochs))*max(1, math.ceil(max(1,int(meta.get('stats',{}).get('valid',1))) / max(1,int(batch)*int(grad_accum))))),
+         'rank':int(rank),'alpha':int(alpha),'dropout':float(dropout),'lr':float(lr),'batch':int(batch),'grad_accum':int(grad_accum),'grad_clip':float(grad_clip),
+         # Deliberately use the stable native acoustic objective. The legacy
+         # arguments remain in the function signature for old Gradio events,
+         # but cannot enable auxiliary text/ASR association anymore.
+         'semantic_loss_weight':0.0,'reference_text_conditioning':False,
+         'phonetic_ctc_enabled':False,'phonetic_ctc_weight':0.0,
+         'legacy_phonetic_ctc_enabled':False,
+         'differentiable_asr_enabled':False,'differentiable_asr_weight':0.0,
+         'differentiable_asr_model':'large-v3','asr_cfm_steps':4,'asr_cfm_temperature':1.0,
+         'language':str(meta.get('language','ES')),
+         'resume':None if not resume or resume==NONE_SENTINEL else resume,'seed':1234,'vram':vram,'project':project,
+         'eval_enabled':bool(eval_enabled),'eval_text':str(eval_text or '').strip(),'eval_reference':str(eval_reference or ''),
+         'eval_reference_transcript':str(eval_reference_transcript or '').strip(),'eval_language':LANGUAGES.get(eval_language,eval_language)}
+    (out/'training_config.json').parent.mkdir(parents=True,exist_ok=True); (out/'training_config.json').write_text(json.dumps(cfg,indent=2),encoding='utf-8')
+    result = TRAINING_MANAGER.start(cfg)
+    _publish_global_status("LoRA training", "Training started.", "working", f"Adapter: {safe} · Dataset: {Path(manifest).name}")
+    return result
+
+def stop_lora_training():
+    from indextts_training import TRAINING_MANAGER
+    result = TRAINING_MANAGER.stop()
+    _publish_global_status("LoRA training", "Stop requested.", "working", "The current training step will finish before the worker exits.")
+    return result
+
+def training_snapshot():
+    from indextts_training import TRAINING_MANAGER
+    st=TRAINING_MANAGER.snapshot(); total=max(1,int(st.get('total') or 1)); step=int(st.get('step') or 0); pct=100*step/total
+    loss='—' if st.get('loss') is None else f"{st['loss']:.5f}"; eta=float(st.get('eta') or 0); elapsed=float(st.get('elapsed') or 0)
+    status=f"{'RUNNING' if st.get('running') else 'IDLE'} | Step {step}/{st.get('total',0)} | {pct:.1f}% | Loss {loss} | Elapsed {elapsed/60:.1f}m | ETA {eta/60:.1f}m"
+    return st.get('message',''), gr.update(value=pct/100)
+
+def training_progress_html():
+    from html import escape
+    from indextts_training import TRAINING_MANAGER
+    st=TRAINING_MANAGER.snapshot(); total=max(0,int(st.get('total') or 0)); step=int(st.get('step') or 0)
+    pct=0.0 if not total else max(0.0,min(100.0,100.0*step/total))
+    loss='—' if st.get('loss') is None else f"{float(st['loss']):.5f}"
+    elapsed=float(st.get('elapsed') or 0); eta=float(st.get('eta') or 0)
+    def fmt(v):
+        total_minutes=max(0,int(round(v/60.0)))
+        return f"{total_minutes//60}h {total_minutes%60:02d}m"
+    running=bool(st.get('running')); title='Training' if running else ('Training complete' if pct>=100 else 'Training')
+    counter=f"{step:,} / {total:,} steps" if total else 'Idle'
+    message=escape(str(st.get('message') or 'Ready'))
+    return (f'<div class="fire-progress-card"><div class="fire-progress-head"><div class="fire-progress-title">{title}</div>'
+            f'<div class="fire-progress-meta">{counter}</div></div><div class="fire-train-track">'
+            f'<div class="fire-train-fill" style="width:{pct:.2f}%"></div></div><div class="fire-progress-foot">'
+            f'<span>{pct:.1f}% · {message} · Loss {loss}</span><span>Elapsed {fmt(elapsed)} · ETA {fmt(eta)}</span>'
+            '</div></div>')
+
+
+def global_status_text():
+    """Return the latest status line for the shared one-line status box."""
+    with GLOBAL_STATUS_LOCK:
+        return GLOBAL_STATUS_LINE
+
+
+def start_training_tensorboard(adapter):
+    from indextts_training import TRAINING_MANAGER
+    safe=_safe_name(adapter); log=TRAINING_OUTPUTS_DIR/safe/'tensorboard'; log.mkdir(parents=True,exist_ok=True)
+    result = TRAINING_MANAGER.start_tensorboard(log)
+    _publish_global_status("TensorBoard", result, "success", f"Log directory: {log}")
+    return result
+
+
+def reload_training_tensorboard(project, adapter):
+    from indextts_training import TRAINING_MANAGER
+    safe=_safe_name(adapter or project)
+    if not safe:
+        _publish_global_status("TensorBoard", "Select a training project first.", "error")
+        raise gr.Error("Select a training project before reloading TensorBoard.")
+    log=TRAINING_OUTPUTS_DIR/safe/'tensorboard'; log.mkdir(parents=True,exist_ok=True)
+    result = TRAINING_MANAGER.reload_tensorboard(log)
+    _publish_global_status("TensorBoard", result, "success", f"Workspace: {safe} · Log directory: {log}")
+    return result
 
 _install_console_mirror()
 
@@ -1066,13 +1883,13 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                 delete_outputs_btn = gr.Button("Delete output audios", size="sm", variant="stop", elem_classes=["red-btn"])
                 delete_voices_btn = gr.Button("Delete reference samples", size="sm", variant="stop", elem_classes=["red-btn"])
 
-    top_status = gr.Markdown(model_status())
+    top_status = gr.State("")
 
     with gr.Tabs(elem_classes="tabs"):
         with gr.Tab("🎙️ Prep Samples", id="tab_prep_samples"):
             gr.Markdown(
                 "### 📚 Reference Audio Library\n"
-                "Manage reusable zero-shot voice references for IndexTTS 2.5. Upload or record a clean single-speaker clip and save it locally. No transcript is required by IndexTTS 2.5."
+                "Manage reusable zero-shot voice references for IndexTTS 2.5. Upload or record a clean single-speaker clip and save it locally. A transcript is optional here, and can be supplied later during inference for pronunciation-aware adapters."
             )
             with gr.Row():
                 with gr.Column(scale=1, elem_classes="form-section"):
@@ -1081,13 +1898,29 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                     with gr.Row():
                         refresh_samples_btn = gr.Button("🔄 Refresh List", size="sm")
                         delete_sample_btn = gr.Button("🗑️ Delete Selected", size="sm", variant="stop", elem_classes="red-btn")
-                    sample_status = gr.Markdown()
+                    sample_status = gr.State("")
                 with gr.Column(scale=2, elem_classes="form-section"):
                     gr.Markdown("#### 🎙️ Reference Audio Editor")
                     prep_audio = gr.Audio(
                         label="Reference Audio (short, clean, single speaker recommended - use Trim to edit)",
                         type="filepath", interactive=True, sources=["upload", "microphone"], elem_classes=["audio-safe-space"]
                     )
+                    prep_reference_transcript = gr.Textbox(
+                        label="Reference Transcript (optional)", lines=4,
+                        placeholder="Enter the exact words spoken in this reference audio, or transcribe them below.",
+                    )
+                    with gr.Accordion("🛰️ Faster-Whisper Transcription (Optional)", open=False):
+                        prep_whisper_model = gr.Dropdown(
+                            ["large-v3", "medium", "small", "base", "tiny"],
+                            value="large-v3", label="Model",
+                        )
+                        prep_whisper_language = gr.Dropdown(
+                            ["Auto-detect", "en", "es", "ja", "zh", "ar"],
+                            value="Auto-detect", label="Language",
+                        )
+                        prep_whisper_batch = gr.Slider(1, 32, 8, step=1, label="Batch Size")
+                        prep_transcribe_btn = gr.Button("Transcribe Now", variant="secondary")
+                        prep_transcribe_status = gr.State("")
                     voice_name = gr.Textbox(label="Voice Name", placeholder="e.g. narrator_es", lines=1)
                     save_voice_btn = gr.Button("💾 Save Reference Voice", variant="primary", elem_classes="green-btn")
                     gr.Markdown("Saved files are copied into `voices/` and remain available across sessions.")
@@ -1100,7 +1933,7 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                     with gr.Row():
                         refresh_emo_desc_btn = gr.Button("🔄 Refresh List", size="sm")
                         delete_emo_desc_btn = gr.Button("🗑️ Delete Selected", size="sm", variant="stop", elem_classes="red-btn")
-                    emo_desc_status = gr.Markdown()
+                    emo_desc_status = gr.State("")
                 with gr.Column(scale=2, elem_classes="form-section"):
                     gr.Markdown("#### ✍️ Emotion Description Editor")
                     prep_emo_desc_name = gr.Textbox(label="Description Name", placeholder="e.g. warm_documentary", lines=1)
@@ -1118,6 +1951,11 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                 gr.Markdown("#### 🎛️ Global Inference Controls")
                 with gr.Row():
                     language = gr.Dropdown(list(LANGUAGES), value="English", label="Language")
+                    lora_adapter = gr.Dropdown(
+                        choices=_adapter_choices(), value=NONE_SENTINEL, label="LoRA Adapter", scale=2,
+                        info="Optional trained IndexTTS 2.5 adapter reused by Single Inference and Dialogue Builder.",
+                    )
+                    refresh_lora_adapter_btn = gr.Button("🔄", size="sm", scale=0, min_width=48)
                     duration_factor = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="Duration Factor", info="<1 faster, >1 slower")
                     text_normalization = gr.Checkbox(value=True, label="Text normalization")
                     interval_silence = gr.Slider(0, 1000, 200, step=10, label="Segment Silence (ms)")
@@ -1187,9 +2025,7 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                             _runtime_values["use_flash_accel"], label="FlashAttention GPT acceleration", interactive=_caps["flash_attn"][0] and _caps["triton"][0],
                             info="Optional IndexTTS 2.5 GPT acceleration engine. Requires the prebuilt FlashAttention Windows wheel + Triton + BF16.",
                         )
-                    acceleration_status_box = gr.Markdown(acceleration_status())
-                    refresh_acceleration_btn = gr.Button("🔄 Refresh Accelerator Status", size="sm")
-                    runtime_settings_status = gr.Markdown("Runtime booleans are saved automatically in `.runtime/gui_settings.json`.")
+                    runtime_settings_status = gr.State("")
 
             with gr.Tabs():
                 with gr.Tab("Single Inference"):
@@ -1207,10 +2043,47 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                                 "Choose **None** to upload or record a custom reference directly here. "
                                 "Choosing a saved Quick Sample loads its waveform/player automatically so you can preview it before generation."
                             )
+                            infer_reference_transcript = gr.Textbox(
+                                label="Reference Transcript (optional)", lines=4,
+                                placeholder="Enter the exact words spoken in the reference audio, or transcribe them below.",
+                            )
+                            with gr.Accordion("🛰️ Faster-Whisper Transcription (Optional)", open=False):
+                                infer_reference_whisper_model = gr.Dropdown(
+                                    ["large-v3", "medium", "small", "base", "tiny"],
+                                    value="large-v3", label="Model",
+                                )
+                                infer_reference_whisper_language = gr.Dropdown(
+                                    ["Auto-detect", "en", "es", "ja", "zh", "ar"],
+                                    value="Auto-detect", label="Language",
+                                )
+                                infer_reference_whisper_batch = gr.Slider(1, 32, 8, step=1, label="Batch Size")
+                                infer_reference_auto_transcribe = gr.Checkbox(
+                                    False, label="Auto-transcribe when the field is empty",
+                                    info="Uses the selected Faster-Whisper model immediately before generation.",
+                                )
+                                infer_reference_transcribe_btn = gr.Button("Transcribe Now", variant="secondary")
+                                infer_reference_transcribe_status = gr.State("")
 
                         with gr.Column(scale=1, elem_classes=["form-section", "target-speech-box"]):
                             gr.Markdown("#### ✍️ Target Speech")
                             infer_text = gr.Textbox(label="Target Text", placeholder="Enter the text to synthesize...", lines=8, value="", elem_classes=["compact"])
+                            with gr.Accordion("📚 Long Text / Chunking", open=False):
+                                with gr.Row():
+                                    infer_chunk_mode = gr.Dropdown(
+                                        CHUNK_CHOICES,
+                                        value="None",
+                                        label="Chunk Mode",
+                                        info="None disables splitting. Paragraph/Sentence Auto is recommended for long prose and follows orthographic sentence punctuation.",
+                                    )
+                                    infer_chunk_silence = gr.Slider(
+                                        0, 5, value=0.5, step=0.1,
+                                        label="Silence Between Chunks (seconds)",
+                                    )
+                                gr.Markdown(
+                                    "Each chunk is synthesized separately with the same voice and settings, "
+                                    "then all chunks are joined into one WAV. The automatic mode keeps sentence "
+                                    "punctuation together and only wraps an overlong sentence at clauses or words."
+                                )
                             with gr.Row():
                                 infer_gen_btn = gr.Button("⚡ Generate Speech", variant="primary", size="lg", scale=4, elem_classes="button-primary")
                                 infer_stop_btn = gr.Button("⏹️ Stop", variant="stop", scale=1, min_width=90, elem_classes="button-stop")
@@ -1218,7 +2091,7 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                             with gr.Group(elem_classes=["output-clean"]):
                                 infer_audio_out = gr.Audio(label="Generated Audio", type="filepath", elem_classes=["audio-safe-space", "output-clean"])
                                 infer_file_out = gr.Textbox(label="Saved WAV", interactive=False, elem_classes=["output-path"])
-                            generation_status = gr.Textbox(label="Generation Status", interactive=False, lines=3, max_lines=3, elem_classes="compact")
+                            generation_status = gr.State("")
 
 
                 with gr.Tab("Dialogue Builder"):
@@ -1309,7 +2182,7 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                     with gr.Group(elem_classes=["output-clean"]):
                         dialogue_audio_out = gr.Audio(label="Generated Dialogue", type="filepath", elem_classes=["audio-safe-space", "output-clean"])
                         dialogue_file_out = gr.Textbox(label="Saved WAV", interactive=False, elem_classes=["output-path"])
-                    dialogue_status = gr.Textbox(label="Dialogue Status", interactive=False, lines=4)
+                    dialogue_status = gr.State("")
 
             with gr.Accordion("📖 IndexTTS 2.5 Control Reference", open=False):
                 gr.Markdown(
@@ -1324,34 +2197,385 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
                 )
 
 
-    with gr.Accordion("🖥️ Runtime Status", open=True, elem_classes=["console-accordion"]):
-        runtime_status = gr.Markdown(cuda_status())
-        with gr.Row():
-            activity_status = gr.Textbox(
-                label="Activity Status", value="Idle.", interactive=False, lines=1, scale=2,
-            )
-            runtime_metrics = gr.Textbox(
-                label="Runtime Metrics", value=_shared_runtime_metrics(), interactive=False,
-                lines=1, scale=3, elem_classes=["runtime-metrics"],
-            )
 
-    with gr.Accordion("🖥️ Embedded Console", open=False, elem_classes=["console-accordion"]):
+
+        with gr.Tab("📂 Dataset Preparation", id="tab_prepare_dataset"):
+            gr.Markdown("*Organize project audio/transcripts and prepare an IndexTTS 2.5 training manifest.*", elem_classes=["tab-subtitle"])
+            with gr.Accordion("📖 Quick Guide", open=False, elem_classes=["quick-guide"]):
+                gr.Markdown(
+                    "Create or select a project, choose the source audio folder and language, then Build / Scan Dataset. "
+                    "Use Missing Transcript ASR only when transcript files are absent. Prepare Dataset writes the reusable manifest."
+                )
+
+            with gr.Row(elem_classes=["project-strip"]):
+                dataset_project_select = gr.Dropdown(
+                    choices=_training_project_choices(), value=None, label="Project", scale=2
+                )
+                dataset_project_name = gr.Textbox(label="New Project Name", placeholder="my_voice", scale=2)
+                dataset_create_project = gr.Button("Create Project", scale=1)
+                dataset_save_project = gr.Button("💾 Save Project", scale=1)
+                dataset_clone_project = gr.Button("Clone Project", variant="secondary", scale=1)
+                dataset_delete_project = gr.Button(
+                    "🗑️ Delete Project", variant="stop", scale=1, elem_classes=["training-red"]
+                )
+
+            with gr.Row():
+                dataset_source_folder = gr.Textbox(label="Source Audio Folder", scale=8)
+                dataset_browse_source = gr.Button("📁 Browse", scale=1, min_width=120)
+                dataset_language = gr.Dropdown(list(LANGUAGES), value="English", label="Language / Dialect", scale=3)
+
+            dataset_build_scan_btn = gr.Button(
+                "Build / Scan Dataset", variant="secondary"
+            )
+            dataset_summary_box = gr.State("")
+            dataset_stats_state = gr.State("")
+
+            with gr.Accordion("🛰️ Missing Transcript ASR", open=True):
+                dataset_transcribe = gr.Checkbox(True, label="Transcribe Missing .txt Files")
+                with gr.Row():
+                    dataset_whisper_model = gr.Dropdown(
+                        ["large-v3", "medium", "small", "base", "tiny"],
+                        value="large-v3", label="Faster-Whisper Model",
+                    )
+                    dataset_whisper_language = gr.Dropdown(
+                        ["Auto-detect", "en", "es", "ja", "zh", "ar"],
+                        value="Auto-detect", label="Whisper Language",
+                    )
+                    dataset_asr_batch = gr.Slider(1, 32, 8, step=1, label="Batch Size")
+                gr.Markdown("Clip duration limits are calculated automatically from the selected dataset.")
+
+            dataset_prepare_btn = gr.Button(
+                "Prepare Dataset", variant="primary",
+                elem_classes=["training-wide-action", "training-orange"],
+            )
+            dataset_manifest = gr.Textbox(label="Prepared Manifest", interactive=False)
+            dataset_project_status = gr.State("")
+
+        with gr.Tab("🚀 LoRA Training", id="tab_lora_training"):
+            gr.Markdown("*Fine-tune the IndexTTS 2.5 GPT with project persistence, AutoTune, checkpoints and TensorBoard.*", elem_classes=["tab-subtitle"])
+            with gr.Accordion("📖 Quick Guide", open=False, elem_classes=["quick-guide"]):
+                gr.Markdown(
+                    "Select a prepared project, choose the VRAM preset and run AutoTune. Save the project after adjusting training "
+                    "settings. Training adapts the IndexTTS 2.5 GPT with PEFT LoRA while the acoustic stack remains frozen. "
+                    "The active objective is native acoustic mel-token reconstruction; legacy text/ASR auxiliary losses are disabled."
+                )
+
+            with gr.Row(elem_classes=["project-strip"]):
+                with gr.Column(scale=4):
+                    train_project = gr.Dropdown(choices=_training_project_choices(), value=None, label="Project")
+                with gr.Column(scale=3):
+                    vram_preset = gr.Dropdown(["24 GB", "32 GB+"], value="24 GB", label="VRAM Preset")
+                with gr.Column(scale=2, min_width=155):
+                    autotune_btn = gr.Button("⚡ AutoTune", variant="secondary")
+                with gr.Column(scale=2, min_width=155):
+                    save_training_project_btn = gr.Button("💾 Save Project", variant="secondary")
+                with gr.Column(scale=2, min_width=155):
+                    train_clone_project = gr.Button("Clone Project", variant="secondary")
+                with gr.Column(scale=2, min_width=155):
+                    train_delete_project = gr.Button(
+                        "🗑️ Delete Project", variant="stop", scale=1, elem_classes=["training-red"]
+                    )
+            autotune_status = gr.State("")
+
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes=["form-section"]):
+                    gr.Markdown("#### 📦 Training Setup")
+                    dataset_manifest_train = gr.Textbox(label="Prepared Dataset", interactive=True)
+                    adapter_name = gr.Textbox(label="Adapter Name", placeholder="my_voice_lora")
+                    mode = gr.Dropdown(["Steps", "Epochs"], value="Steps", label="Training Length Mode")
+                    with gr.Group(visible=True) as steps_group:
+                        with gr.Row():
+                            training_steps = gr.Slider(1, 10000, 1000, step=1, label="Training Steps")
+                            save_steps = gr.Slider(1, 2000, 100, step=1, label="Save Every N Steps")
+                    with gr.Group(visible=False) as epochs_group:
+                        with gr.Row():
+                            training_epochs = gr.Slider(1, 500, 20, step=1, label="Training Epochs")
+                            save_epochs = gr.Slider(1, 100, 2, step=1, label="Save Every N Epochs")
+                    with gr.Row():
+                        resume_checkpoint = gr.Dropdown(
+                            choices=[("None", NONE_SENTINEL)], value=NONE_SENTINEL,
+                            label="Resume Checkpoint", scale=5,
+                        )
+                        refresh_resume_btn = gr.Button("🔄", min_width=52, scale=0)
+
+                with gr.Column(scale=1, elem_classes=["form-section"]):
+                    gr.Markdown("#### ⚙️ LoRA Hyperparameters")
+                    with gr.Row():
+                        lora_rank = gr.Dropdown(
+                            [4, 8, 16, 32, 64, 128, 256], value=16, label="LoRA Rank"
+                        )
+                        lora_alpha = gr.Slider(4, 128, 32, step=1, label="LoRA Alpha")
+                    lora_dropout = gr.Slider(0, .2, .05, step=.01, label="LoRA Dropout")
+                    learning_rate = gr.Slider(.000001, .001, .00004, step=.000001, label="Learning Rate")
+                    with gr.Row():
+                        grad_accum = gr.Slider(1, 64, 8, step=1, label="Gradient Accumulation")
+                        training_seed = gr.Number(1234, precision=0, label="Training Seed")
+                    # Kept as hidden compatibility inputs for old project
+                    # schemas. The active training profile is acoustic-only:
+                    # no auxiliary text-token, ASR, CTC or reference-text loss.
+                    semantic_loss_weight = gr.Number(0.0, precision=3, visible=False)
+                    phonetic_ctc_enabled = gr.Checkbox(False, visible=False)
+                    phonetic_ctc_weight = gr.Number(0.0, precision=3, visible=False)
+                    # Kept for the trainer backend but intentionally hidden to match the FireRed control surface.
+                    micro_batch = gr.Number(1, precision=0, visible=False)
+                    grad_clip = gr.Number(0.5, precision=2, visible=False)
+                    lora_internal_note = gr.Markdown("", visible=False)
+
+            with gr.Accordion("🎧 Eval Audio + TensorBoard", open=True):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        eval_enabled = gr.Checkbox(True, label="Generate Eval Audio at Checkpoints")
+                        eval_text = gr.Textbox(value="This is an IndexTTS 2.5 training preview.", label="Eval Text", lines=3)
+                        eval_language = gr.Dropdown(list(LANGUAGES), value="English", label="Eval Language")
+                    with gr.Column(scale=1):
+                        eval_reference = gr.Audio(
+                            type="filepath", label="Eval Reference Audio", sources=["upload", "microphone"],
+                            elem_classes=["audio-safe-space"],
+                        )
+                        eval_reference_transcript = gr.Textbox(label="Eval Reference Transcript", lines=3)
+                with gr.Row():
+                    eval_whisper_model = gr.Dropdown(
+                        ["large-v3", "medium", "small", "base", "tiny"], value="large-v3", label="Transcription Model"
+                    )
+                    eval_whisper_language = gr.Dropdown(
+                        ["Auto-detect", "en", "es", "ja", "zh", "ar"], value="Auto-detect", label="Speech Language"
+                    )
+                    eval_asr_batch = gr.Slider(1, 32, 8, step=1, label="Batch Size")
+                eval_transcribe_btn = gr.Button("🛰️ Transcribe Eval Audio", variant="secondary")
+                eval_transcribe_status = gr.State("")
+
+            with gr.Row(elem_classes=["global-toolbar"]):
+                start_training_btn = gr.Button(
+                    "🚀 Start Training", variant="primary", elem_classes=["training-orange"], scale=1
+                )
+                stop_training_btn = gr.Button(
+                    "⏹️ Stop", variant="stop", elem_classes=["training-red"], scale=1
+                )
+                tensorboard_btn = gr.Button("📊 TensorBoard", variant="secondary", scale=1)
+                reload_tensorboard_btn = gr.Button("↻ Reload TensorBoard", variant="secondary", scale=1)
+
+            training_status = gr.HTML(value=training_progress_html(), elem_classes=["training-progress"])
+            training_progress = gr.State(0.0)
+
+            tensorboard_status = gr.State("")
+            training_message = gr.State("")
+            training_timer = gr.Timer(1.0)
+
+    # Internal sinks keep existing event callbacks harmless without exposing
+    # a second layer of status fields in the visual workflow.
+    runtime_status = gr.State("")
+    activity_status = gr.State("")
+    runtime_metrics = gr.State("")
+
+    global_status_panel = gr.Textbox(
+        label="Status", value=global_status_text(), lines=1, max_lines=1,
+        interactive=False, elem_classes=["global-status-panel"],
+    )
+    global_status_timer = gr.Timer(0.5)
+
+    with gr.Accordion("🖥️ Embedded Console", open=True, elem_classes=["console-accordion"]):
         gr.Markdown(
         )
         cmd_console = gr.HTML(value=console_html())
         cmd_console_timer = gr.Timer(0.5)
-        runtime_metrics_timer = gr.Timer(1.0)
+
+
+    dataset_browse_source.click(
+        browse_dataset_folder, dataset_source_folder, dataset_source_folder,
+        queue=False, show_progress="hidden",
+    )
+    dataset_create_project.click(
+        create_dataset_project, dataset_project_name,
+        [dataset_project_select, dataset_project_name, dataset_project_status],
+        queue=False, show_progress="hidden",
+    )
+    dataset_save_project.click(
+        save_dataset_project,
+        [dataset_project_select, dataset_project_name, dataset_source_folder, dataset_manifest, dataset_language],
+        [dataset_project_select, dataset_project_name, dataset_project_status],
+        queue=False, show_progress="hidden",
+    )
+    dataset_clone_project.click(
+        clone_dataset_project,
+        dataset_project_select,
+        [dataset_project_select, dataset_project_name, dataset_source_folder, dataset_manifest,
+         dataset_summary_box, dataset_language, train_project, dataset_manifest_train, dataset_project_status],
+        queue=False, show_progress="hidden",
+    ).then(
+        load_full_training_project,
+        dataset_project_select,
+        [
+            dataset_source_folder, dataset_manifest_train, dataset_summary_box, dataset_language,
+            adapter_name, vram_preset, mode, training_steps, training_epochs,
+            save_steps, save_epochs, lora_rank, lora_alpha, lora_dropout,
+            learning_rate, micro_batch, grad_accum, grad_clip, semantic_loss_weight,
+            phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
+            eval_enabled, eval_text, eval_reference, eval_reference_transcript,
+            eval_language, eval_whisper_model, eval_whisper_language,
+            steps_group, epochs_group, autotune_status,
+        ],
+        queue=False, show_progress="hidden",
+    )
+    dataset_delete_project.click(
+        delete_training_project, dataset_project_select,
+        [train_project, dataset_project_select, dataset_project_status],
+        queue=False, show_progress="hidden",
+    )
+    dataset_project_select.change(
+        load_training_project,
+        dataset_project_select,
+        [dataset_source_folder, dataset_manifest, dataset_summary_box, dataset_language],
+        queue=False, show_progress="hidden",
+    ).then(
+        lambda name: f"Loaded project: {name}" if name else "No project selected.",
+        dataset_project_select, dataset_project_status,
+        queue=False, show_progress="hidden",
+    ).then(
+        sync_training_project_selection,
+        dataset_project_select,
+        [train_project, dataset_manifest_train, autotune_status],
+        queue=False, show_progress="hidden",
+    )
+    dataset_build_scan_btn.click(
+        scan_training_dataset,
+        [dataset_source_folder],
+        [dataset_summary_box, dataset_stats_state],
+    )
+    dataset_prepare_btn.click(
+        prepare_training_dataset,
+        [
+            dataset_source_folder, dataset_project_name, dataset_project_select, dataset_language,
+            dataset_transcribe,
+            dataset_whisper_model, dataset_whisper_language, dataset_asr_batch,
+        ],
+        [dataset_summary_box, dataset_project_select, dataset_manifest, train_project,
+         dataset_manifest_train, autotune_status],
+    ).then(
+        lambda summary: f"Dataset prepared. {summary}",
+        dataset_summary_box, dataset_project_status,
+        queue=False, show_progress="hidden",
+    )
+
+    train_project.change(
+        load_full_training_project,
+        train_project,
+        [
+            dataset_source_folder, dataset_manifest_train, dataset_summary_box, dataset_language,
+            adapter_name, vram_preset, mode, training_steps, training_epochs,
+            save_steps, save_epochs, lora_rank, lora_alpha, lora_dropout,
+            learning_rate, micro_batch, grad_accum, grad_clip, semantic_loss_weight,
+            phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
+            eval_enabled, eval_text, eval_reference, eval_reference_transcript,
+            eval_language, eval_whisper_model, eval_whisper_language,
+            steps_group, epochs_group, autotune_status,
+        ],
+        queue=False, show_progress="hidden",
+    )
+    mode.change(training_mode_visibility, mode, [steps_group, epochs_group], queue=False)
+
+    autotune_btn.click(
+        training_autotune,
+        [train_project, vram_preset],
+        [mode, training_steps, training_epochs, save_steps, save_epochs, lora_rank, lora_alpha, learning_rate, grad_accum, autotune_status],
+    )
+    refresh_resume_btn.click(
+        refresh_resume, [adapter_name, resume_checkpoint], resume_checkpoint,
+        queue=False, show_progress="hidden",
+    )
+    eval_transcribe_btn.click(
+        transcribe_training_eval,
+        [eval_reference, eval_whisper_model, eval_whisper_language, eval_asr_batch],
+        [eval_reference_transcript, eval_transcribe_status],
+    )
+
+    save_training_project_btn.click(
+        save_training_project,
+        [
+            train_project, dataset_source_folder, dataset_manifest_train, dataset_language,
+            adapter_name, vram_preset, mode, training_steps, training_epochs,
+            save_steps, save_epochs, lora_rank, lora_alpha, lora_dropout,
+            learning_rate, micro_batch, grad_accum, grad_clip, semantic_loss_weight,
+            phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
+            eval_enabled, eval_text, eval_reference, eval_reference_transcript,
+            eval_language, eval_whisper_model, eval_whisper_language,
+        ],
+        [train_project, dataset_project_select, autotune_status],
+    )
+    train_clone_project.click(
+        clone_lora_project,
+        train_project,
+        [
+            train_project, dataset_project_select, dataset_project_name, dataset_manifest,
+            dataset_source_folder, dataset_manifest_train, dataset_summary_box, dataset_language,
+            adapter_name, vram_preset, mode, training_steps, training_epochs,
+            save_steps, save_epochs, lora_rank, lora_alpha, lora_dropout,
+            learning_rate, micro_batch, grad_accum, grad_clip, semantic_loss_weight,
+            phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
+            eval_enabled, eval_text, eval_reference, eval_reference_transcript,
+            eval_language, eval_whisper_model, eval_whisper_language,
+            steps_group, epochs_group, autotune_status, dataset_project_status,
+        ],
+        queue=False, show_progress="hidden",
+    )
+    train_delete_project.click(
+        delete_training_project, train_project,
+        [train_project, dataset_project_select, autotune_status],
+        queue=False, show_progress="hidden",
+    )
+
+    start_training_btn.click(
+        start_lora_training,
+        [
+            train_project, dataset_manifest_train, adapter_name, vram_preset, mode, training_steps,
+            training_epochs, save_steps, save_epochs, lora_rank, lora_alpha,
+            lora_dropout, learning_rate, micro_batch, grad_accum, grad_clip, semantic_loss_weight,
+            phonetic_ctc_enabled, phonetic_ctc_weight,
+            resume_checkpoint, eval_enabled, eval_text, eval_reference, eval_reference_transcript, eval_language,
+        ],
+        training_message,
+    )
+    stop_training_btn.click(stop_lora_training, outputs=training_message, queue=False)
+    tensorboard_btn.click(start_training_tensorboard, adapter_name, tensorboard_status, queue=False)
+    reload_tensorboard_btn.click(
+        reload_training_tensorboard, [train_project, adapter_name], tensorboard_status, queue=False,
+    )
+    training_timer.tick(training_progress_html, None, training_status, queue=False, show_progress="hidden")
+    training_timer.tick(
+        training_snapshot, None, [training_message, training_progress],
+        queue=False, show_progress="hidden",
+    )
+
+    dataset_project_select.change(
+        lambda current: gr.update(choices=_training_project_choices(), value=current),
+        dataset_project_select, train_project,
+        queue=False, show_progress="hidden",
+    )
 
     top_unload_btn.click(unload_model, outputs=runtime_status).then(model_status, outputs=top_status)
     delete_outputs_btn.click(delete_outputs, outputs=runtime_status)
-    delete_voices_btn.click(delete_all_voices, outputs=[runtime_status, sample_dropdown, infer_sample_select])
+    delete_voices_btn.click(delete_all_voices, outputs=[runtime_status, sample_dropdown, infer_sample_select]).then(
+        lambda: ("", ""), outputs=[prep_reference_transcript, infer_reference_transcript]
+    )
 
-    save_voice_btn.click(save_voice, [prep_audio, voice_name], [sample_status, sample_dropdown, infer_sample_select])
+    save_voice_btn.click(
+        save_voice, [prep_audio, voice_name, prep_reference_transcript],
+        [sample_status, sample_dropdown, infer_sample_select],
+    ).then(set_prep_voice, sample_dropdown, [prep_audio, prep_reference_transcript]).then(
+        set_voice_inference, infer_sample_select, [infer_ref_audio, infer_reference_transcript]
+    )
+    prep_transcribe_btn.click(
+        transcribe_audio_reference,
+        [prep_audio, prep_whisper_model, prep_whisper_language, prep_whisper_batch],
+        prep_reference_transcript,
+    )
     refresh_samples_btn.click(lambda value: refresh_voice_dropdown(value, include_none=True), sample_dropdown, sample_dropdown)
     refresh_infer_sample_btn.click(lambda value: refresh_voice_dropdown(value, include_none=True), infer_sample_select, infer_sample_select)
-    delete_sample_btn.click(delete_selected_voice, sample_dropdown, [sample_status, sample_dropdown, infer_sample_select])
-    sample_dropdown.change(set_prep_voice, sample_dropdown, prep_audio)
-    infer_sample_select.change(set_voice_inference, infer_sample_select, infer_ref_audio)
+    refresh_lora_adapter_btn.click(refresh_adapters, lora_adapter, lora_adapter, queue=False, show_progress="hidden")
+    delete_sample_btn.click(delete_selected_voice, sample_dropdown, [sample_status, sample_dropdown, infer_sample_select]).then(
+        lambda: ("", ""), outputs=[prep_reference_transcript, infer_reference_transcript]
+    )
+    sample_dropdown.change(set_prep_voice, sample_dropdown, [prep_audio, prep_reference_transcript])
+    infer_sample_select.change(set_voice_inference, infer_sample_select, [infer_ref_audio, infer_reference_transcript])
 
     save_emo_desc_btn.click(
         save_emotion_description, [prep_emo_desc_name, prep_emo_desc_text],
@@ -1370,10 +2594,17 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
         [emotion_ref_group, emotion_vector_group, emotion_description_group, emotion_strength_group, emotion_random_group],
     )
     emotion_preset.change(apply_emotion_preset, emotion_preset, emotion_sliders)
+    infer_reference_transcribe_btn.click(
+        transcribe_inference_reference,
+        [infer_sample_select, infer_ref_audio, infer_reference_whisper_model, infer_reference_whisper_language, infer_reference_whisper_batch],
+        infer_reference_transcript,
+    )
 
     gen_inputs = [
-        infer_sample_select, infer_ref_audio, infer_text, language, emotion_mode, emotion_audio, emotion_alpha,
-        *emotion_sliders, emotion_text, random_emotion, duration_factor, interval_silence,
+        infer_sample_select, infer_ref_audio, infer_text, infer_reference_transcript, infer_reference_auto_transcribe,
+        infer_reference_whisper_model, infer_reference_whisper_language, infer_reference_whisper_batch,
+        lora_adapter, language, emotion_mode, emotion_audio, emotion_alpha,
+        *emotion_sliders, emotion_text, random_emotion, duration_factor, interval_silence, infer_chunk_mode, infer_chunk_silence,
         text_normalization, max_text_tokens, do_sample, top_p, top_k, temperature,
         num_beams, repetition_penalty, length_penalty, max_mel_tokens,
         use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, infer_save_outputs,
@@ -1381,7 +2612,6 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
     infer_gen_btn.click(lambda: "Single inference running…", outputs=activity_status, queue=False, show_progress="hidden")
     generation_event = infer_gen_btn.click(generate, gen_inputs, [infer_audio_out, infer_file_out, generation_status])
     generation_event.then(lambda status: status, generation_status, activity_status, queue=False, show_progress="hidden")
-    generation_event.then(_shared_runtime_metrics, None, runtime_metrics, queue=False, show_progress="hidden")
     infer_stop_btn.click(lambda: "Single inference stop requested.", outputs=activity_status, queue=False, show_progress="hidden")
     infer_stop_btn.click(
         lambda: "Stop requested. The queued Gradio generation event was cancelled; an already-running CUDA kernel returns control before cancellation can fully complete.",
@@ -1443,7 +2673,7 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
         )
 
     dialogue_inputs = [
-        language, duration_factor, interval_silence, text_normalization, max_text_tokens,
+        lora_adapter, language, duration_factor, interval_silence, text_normalization, max_text_tokens,
         do_sample, top_p, top_k, temperature, num_beams, repetition_penalty, length_penalty, max_mel_tokens,
         use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel, dialogue_silence,
         dialogue_row_count, *dialogue_components,
@@ -1453,8 +2683,6 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
     dialogue_stop_btn.click(lambda: "Dialogue stop requested.", outputs=activity_status, queue=False, show_progress="hidden")
     dialogue_stop_btn.click(lambda: "Stop requested.", outputs=dialogue_status, cancels=[dialogue_event])
 
-    refresh_acceleration_btn.click(acceleration_status, outputs=acceleration_status_box)
-
     runtime_inputs = [use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel]
     for runtime_control in (use_bf16, use_gpt_latent, use_torch_compile):
         runtime_control.change(_save_runtime_settings, runtime_inputs, runtime_settings_status)
@@ -1463,11 +2691,10 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
         [use_bf16, runtime_settings_status],
     )
     dialogue_event.then(lambda status: status, dialogue_status, activity_status, queue=False, show_progress="hidden")
-    dialogue_event.then(_shared_runtime_metrics, None, runtime_metrics, queue=False, show_progress="hidden")
 
 
+    global_status_timer.tick(global_status_text, None, global_status_panel, queue=False, show_progress="hidden")
     cmd_console_timer.tick(console_html, None, cmd_console, queue=False, show_progress="hidden")
-    runtime_metrics_timer.tick(_shared_runtime_metrics, None, runtime_metrics, queue=False, show_progress="hidden")
 
 
 if __name__ == "__main__":
