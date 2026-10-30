@@ -14,3 +14,16 @@
 新机器先运行 `1- install.bat`，再运行 `2- run.bat`。直接运行 `easy_gui.py` 时，监听地址和端口从同名环境变量读取；批处理本地配置文件由启动脚本负责加载。
 
 `.venv`、`.runtime`、模型、语料、训练项目、输出和本地配置均不提交。已有运行副本无需迁移；本仓库先用于源码开发和追踪，不会自动复制现有环境或模型。
+
+## 简体中文界面
+
+- 默认简体中文；顶部“界面语言 / UI Language”可选择 English，保存后手动重启生效。
+- 覆盖声音库、语音合成、对话、数据准备、LoRA 训练、说明和常见状态/错误提示。控制台、原始异常详情和 TensorBoard 保留原文。
+- 翻译只改变枚举显示标签，内部值、路径、用户文本与已保存项目字段保持兼容；缺少翻译时回退英文。
+- `ui_language` 保存在被忽略的 `.runtime/gui_settings.json` 中，与 CUDA 设置合并写入，保留其他字段。
+
+使用安装后的 Python 运行离线验证：
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_easy_gui_i18n.py -v
+```
