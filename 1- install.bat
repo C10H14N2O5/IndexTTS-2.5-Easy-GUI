@@ -1,9 +1,14 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
+
+rem Optional machine-local settings; this file is excluded from Git.
+if exist "%~dp0local-settings.bat" call "%~dp0local-settings.bat"
+if not defined INDEXTTS_HOST set "INDEXTTS_HOST=127.0.0.1"
+if not defined INDEXTTS_PORT set "INDEXTTS_PORT=7860"
 title IndexTTS 2.5 Easy GUI - Fixed CUDA Installer
 
-set "UV_VERSION=0.10.0"
+set "UV_VERSION=0.13.6"
 set "PYTHON_VERSION=3.11.15"
 set "UV_DIR=%CD%\.runtime\uv"
 set "UV_EXE=%UV_DIR%\uv.exe"
@@ -22,6 +27,12 @@ set "UV_NO_CACHE=1"
 set "UV_LINK_MODE=copy"
 set "PIP_NO_CACHE_DIR=1"
 set "PYTHONDONTWRITEBYTECODE=1"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "NO_PROXY=localhost,127.0.0.1,::1,%INDEXTTS_HOST%,%NO_PROXY%"
+set "USE_MODELSCOPE=false"
+set "NLTK_DATA=%CD%\.runtime\nltk_data"
+set "PATH=%CD%\.runtime\bin;%PATH%"
 set "TRITON_CACHE_DIR=%CD%\.runtime\triton-cache"
 set "TORCHINDUCTOR_CACHE_DIR=%CD%\.runtime\torchinductor-cache"
 set "TORCH_EXTENSIONS_DIR=%CD%\.runtime\torch-extensions"
@@ -51,7 +62,7 @@ nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 
 if not exist "%UV_EXE%" (
   echo [2/8] Downloading project-local uv %UV_VERSION%...
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $zip='%TEMP%\uv-indextts.zip'; Invoke-WebRequest -UseBasicParsing 'https://github.com/astral-sh/uv/releases/download/%UV_VERSION%/uv-x86_64-pc-windows-msvc.zip' -OutFile $zip; Expand-Archive -Force $zip '%UV_DIR%'; Remove-Item -Force $zip"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $zip='%TEMP%\uv-indextts.zip'; $requestParams=@{}; $downloadProxy=$env:HTTPS_PROXY; if (-not $downloadProxy) { $downloadProxy=$env:HTTP_PROXY }; if ($downloadProxy) { $requestParams['Proxy']=$downloadProxy }; Invoke-WebRequest @requestParams -UseBasicParsing 'https://github.com/astral-sh/uv/releases/download/%UV_VERSION%/uv-x86_64-pc-windows-msvc.zip' -OutFile $zip; Expand-Archive -Force $zip '%UV_DIR%'; Remove-Item -Force $zip"
   if errorlevel 1 goto :fail
 ) else (
   echo [2/8] Project-local uv already present.
@@ -94,7 +105,7 @@ echo [Text Normalization] Verifying Spanish normalization runtime...
 if errorlevel 1 goto :fail
 
 echo [Training] Installing experimental PEFT LoRA and Faster-Whisper dependencies...
-"%UV_EXE%" pip install --python "%PY_EXE%" --no-cache "peft==0.17.1" "faster-whisper==1.2.1"
+"%UV_EXE%" pip install --python "%PY_EXE%" --no-cache "peft==0.17.1" "faster-whisper==1.2.1" "imageio-ffmpeg==0.6.0" "onnxruntime==1.23.2" "protobuf==3.19.6"
 if errorlevel 1 (
   echo [ERROR] Experimental training dependencies failed to install.
   goto :fail
@@ -189,7 +200,7 @@ if exist "%MINIFORGE_DIR%\condabin\conda.bat" (
 
 echo [NeMo] Conda not found; downloading project-local Miniforge...
 if not exist "%MINIFORGE_EXE%" (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing '%MINIFORGE_URL%' -OutFile '%MINIFORGE_EXE%'"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $requestParams=@{}; $downloadProxy=$env:HTTPS_PROXY; if (-not $downloadProxy) { $downloadProxy=$env:HTTP_PROXY }; if ($downloadProxy) { $requestParams['Proxy']=$downloadProxy }; Invoke-WebRequest @requestParams -UseBasicParsing '%MINIFORGE_URL%' -OutFile '%MINIFORGE_EXE%'"
   if errorlevel 1 exit /b 1
 )
 

@@ -47,3 +47,13 @@ desktop.ini
 training/projects/
 training/datasets/
 training/outputs/
+
+# Machine-local launch settings and exported model files.
+/local-settings.bat
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.pth.partial
+*.merge.json

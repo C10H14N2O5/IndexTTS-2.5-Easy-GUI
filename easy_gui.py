@@ -2698,4 +2698,4 @@ with gr.Blocks(title=APP_TITLE, css=CSS) as demo:
 
 
 if __name__ == "__main__":
-    demo.queue(default_concurrency_limit=1).launch(inbrowser=True, server_name="127.0.0.1", server_port=7860, show_error=True)
+    demo.queue(default_concurrency_limit=1).launch(inbrowser=True, server_name=os.environ.get("INDEXTTS_HOST", "127.0.0.1"), server_port=int(os.environ.get("INDEXTTS_PORT", "7860")), show_error=True)

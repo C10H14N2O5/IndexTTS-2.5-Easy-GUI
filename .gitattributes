@@ -1,2 +1,10 @@
 # Example audio files are now downloaded on demand from HuggingFace/ModelScope.
 # See indextts/utils/examples_downloader.py
+
+# Keep Windows launchers executable and source diffs consistent.
+*.bat text eol=crlf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
