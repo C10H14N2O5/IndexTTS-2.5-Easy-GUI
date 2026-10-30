@@ -1,5 +1,12 @@
 # IndexTTS 2.5 Easy GUI
 
+## 本分支增强 / Local enhancements
+
+简体中文界面（可切换 English）、Windows 启动与依赖修复、可选本地代理/监听配置，以及可独立导出完整 GPT `.pth` 的 CPU LoRA 合并工具。保留上游功能、历史与许可证。
+
+Chinese UI with an English switch, portable Windows launch fixes, and a CPU LoRA-to-GPT checkpoint exporter. See [中文使用与改动说明](docs/LOCAL_CHANGES_zh.md) for setup, export commands, compatibility and offline checks.
+
+
 A Windows GUI for **IndexTTS 2.5** with voice cloning, reusable voice and emotion libraries, multilingual synthesis, detailed emotion control, Dialogue Builder, CUDA acceleration controls, automatic model downloads, progress reporting, and an embedded runtime console.
 
 ![Main Infer](assets/tab2.png)
