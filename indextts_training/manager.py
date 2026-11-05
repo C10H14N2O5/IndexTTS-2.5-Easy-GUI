@@ -33,6 +33,8 @@ class TrainingManager:
                 return self._start_locked(config)
     def _start_locked(self,config):
         if self.thread and self.thread.is_alive(): raise RuntimeError('Training is already running.')
+        from .activity import acquire, release
+        activity_token = acquire('training')
         self.stop_event.clear(); self._update(running=True,step=0,total=0,message='Starting experimental LoRA training…',output='')
         def worker():
             try:
@@ -52,7 +54,16 @@ class TrainingManager:
                     if torch.cuda.is_available(): torch.cuda.empty_cache()
                 except Exception:
                     pass
-        self.thread=threading.Thread(target=worker,daemon=True); self.thread.start(); return 'Training started.'
+            finally:
+                release(activity_token)
+        try:
+            self.thread=threading.Thread(target=worker,daemon=True)
+            self.thread.start()
+        except Exception:
+            self._update(running=False)
+            release(activity_token)
+            raise
+        return 'Training started.'
     def stop(self): self.stop_event.set(); self._update(message='Stop requested…'); return 'Stop requested.'
     def _stop_tensorboard_server(self):
         process=self.tensorboard
