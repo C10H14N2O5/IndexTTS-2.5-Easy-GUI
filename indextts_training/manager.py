@@ -21,6 +21,17 @@ class TrainingManager:
     def snapshot(self):
         with self.lock: return dict(self.state)
     def start(self,config):
+        from .dataset import DATASET_LOCK, load_project, validate_project_manifest
+        from .proofread import directory_lock
+        from contextlib import nullcontext
+        with DATASET_LOCK:
+            training_root = config.get('training_root', 'training')
+            project = load_project(config.get('project'), training_root)
+            source = project.get('source_folder')
+            with directory_lock(source) if source else nullcontext():
+                validate_project_manifest(config.get('project'), config['manifest'], training_root)
+                return self._start_locked(config)
+    def _start_locked(self,config):
         if self.thread and self.thread.is_alive(): raise RuntimeError('Training is already running.')
         self.stop_event.clear(); self._update(running=True,step=0,total=0,message='Starting experimental LoRA training…',output='')
         def worker():

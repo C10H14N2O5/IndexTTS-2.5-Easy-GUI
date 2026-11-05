@@ -502,5 +502,12 @@
   "Invalid interface language.": "无效的界面语言。",
   "Changes take effect after restarting WebUI.": "切换后需重启 WebUI 生效。",
   "{0}% · {1} · Loss {2}": "{0}% · {1} · 损失 {2}",
-  "Elapsed {0} · ETA {1}": "已用 {0} · 预计剩余 {1}"
+  "Elapsed {0} · ETA {1}": "已用 {0} · 预计剩余 {1}",
+  "Recognizing audio with SenseVoiceSmall Q8 (CPU).": "正在使用 SenseVoiceSmall Q8（CPU）识别音频。",
+  "SenseVoiceSmall Q8 · CPU · automatic language detection": "SenseVoiceSmall Q8 · CPU · 自动识别语言",
+  "🛰️ SenseVoice Transcription (Optional)": "🛰️ SenseVoice 语音识别（可选）",
+  "Uses SenseVoiceSmall Q8 on CPU immediately before generation.": "生成前使用 SenseVoiceSmall Q8 在 CPU 上识别参考音频。",
+  "Recognize missing text and proofread below. Save the project before updating its manifest.": "在下方识别缺失文本并听音校对。更新训练清单前，请先保存项目的目录和语言。",
+  "Update Training Manifest": "更新训练清单",
+  "Create or select a project and save its source folder and language. Recognize missing text in the proofreading workbench, review and save transcripts, then update the training manifest.": "创建或选择项目，保存语料目录和语言。在校对工作台识别缺失文本、听音修改并保存，然后更新训练清单。"
 }

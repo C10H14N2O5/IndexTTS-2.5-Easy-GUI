@@ -66,6 +66,10 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 import gradio as gr
+from indextts_training.asr import AsrService
+from indextts_training.dataset import project_transaction, _atomic_write
+
+ASR_SERVICE = AsrService(ROOT)
 
 from indextts.utils.text_chunking import CHUNK_CHOICES, split_long_text
 
@@ -864,50 +868,22 @@ def _resolve_inference_prompt(quick_sample, prompt_audio):
     return prompt
 
 
-def transcribe_inference_reference(quick_sample, prompt_audio, model_size, language, batch_size=8, progress=gr.Progress()):
-    """Transcribe the exact reference audio that Single Inference will use."""
+def transcribe_inference_reference(quick_sample, prompt_audio, model_size=None, language=None, batch_size=1, progress=gr.Progress()):
     prompt = _resolve_inference_prompt(quick_sample, prompt_audio)
-    _publish_global_status(t('Reference transcription'), t('Loading Faster-Whisper for the selected reference audio.'), "working", t('Model: {0}', model_size or 'large-v3'))
+    _publish_global_status(t('Reference transcription'), t('Recognizing audio with SenseVoiceSmall Q8 (CPU).'), "working")
     try:
-        import torch
-        from faster_whisper import WhisperModel
-        use_cuda = bool(torch.cuda.is_available())
-        progress(0.08, desc=t('Loading Faster-Whisper'))
-        model = WhisperModel(
-            str(model_size or "large-v3"),
-            device="cuda" if use_cuda else "cpu",
-            compute_type="float16" if use_cuda else "int8",
-        )
-        progress(0.35, desc=t('Transcribing reference audio'))
-        transcribe_kwargs = dict(
-            language=None if not language or language == "Auto-detect" else str(language),
-            vad_filter=True,
-        )
-        if int(batch_size or 1) > 1:
-            from faster_whisper import BatchedInferencePipeline
-            segments, _ = BatchedInferencePipeline(model=model).transcribe(
-                str(prompt), batch_size=int(batch_size), **transcribe_kwargs
-            )
-        else:
-            segments, _ = model.transcribe(str(prompt), **transcribe_kwargs)
-        result = " ".join(segment.text.strip() for segment in segments).strip()
-        del model
-        if use_cuda:
-            torch.cuda.empty_cache()
-        if not result:
-            raise gr.Error(t('Whisper returned an empty reference transcript.'))
+        progress(0.1, desc=t('Recognizing audio with SenseVoiceSmall Q8 (CPU).'))
+        result = ASR_SERVICE.transcribe(prompt)
         progress(1.0, desc=t('Reference transcript ready'))
-        _publish_global_status(t('Reference transcription'), t('Reference transcript ready.'), "success", t('{0} characters transcribed from {1}.', len(result), Path(prompt).name))
+        _publish_global_status(t('Reference transcription'), t('Reference transcript ready.'), "success")
         return result
-    except gr.Error:
-        raise
     except Exception as exc:
-        _publish_global_status(t('Reference transcription'), t('Reference transcription failed: {0}', type(exc).__name__), "error", str(exc))
-        raise gr.Error(t('Reference transcription failed: {0}: {1}', type(exc).__name__, exc))
+        _publish_global_status(t('Reference transcription'), str(exc), "error")
+        raise gr.Error(str(exc)) from exc
 
 
 def transcribe_audio_reference(audio_path, model_size, language, batch_size=8, progress=gr.Progress()):
-    """Shared Prep Samples entry point using the same FireRed/MOSS ASR panel."""
+    """Shared reference transcription entry point using the local SenseVoice runtime."""
     return transcribe_inference_reference(
         NONE_SENTINEL, audio_path, model_size, language, batch_size, progress=progress
     )
@@ -1420,16 +1396,14 @@ def scan_training_dataset(folder):
 
 def prepare_training_dataset(folder, project, selected_project, language, transcribe, whisper_model, whisper_lang, asr_batch=8, progress=gr.Progress()):
     from indextts_training.dataset import prepare_dataset, dataset_summary
-    project = str(project or selected_project or "").strip()
+    project = str(selected_project or project or "").strip()
     if not project:
         raise gr.Error(t('Create or select a Training Project first.'))
-    phase = t('Dataset transcription') if bool(transcribe) else t('Dataset preparation')
+    phase = t('Dataset preparation')
     _publish_global_status(t(phase), t('Scanning the dataset and calculating automatic clip bounds.'), "working", t('Project: {0}', project))
     progress(.05,desc=t('Scanning source dataset'))
     try:
-        if bool(transcribe):
-            _publish_global_status(t('Dataset transcription'), t('Transcribing missing transcript sidecars with Faster-Whisper.'), "working", t('Model: {0} · Language: {1}', whisper_model or 'large-v3', whisper_lang or 'Auto-detect'))
-        meta=prepare_dataset(folder,project,LANGUAGES.get(language,language),None,None,bool(transcribe),whisper_model,whisper_lang,str(TRAINING_DIR))
+        meta=prepare_dataset(folder,project,LANGUAGES.get(language,language),root=str(TRAINING_DIR))
     except Exception as exc:
         _publish_global_status(t(phase), t('Dataset preparation failed: {0}', type(exc).__name__), "error", str(exc))
         raise gr.Error(localize_backend_message(str(exc))) from exc
@@ -1477,6 +1451,7 @@ def _training_project_file(project_name):
 
 
 
+@project_transaction
 def create_dataset_project(project_name):
     safe = _safe_name(project_name)
     if not safe:
@@ -1495,6 +1470,7 @@ def create_dataset_project(project_name):
     return gr.update(choices=choices, value=safe), safe, t('Project created: {0}', safe)
 
 
+@project_transaction
 def save_dataset_project(project, new_name, source_folder, manifest, language):
     name = project or new_name
     safe = _safe_name(name)
@@ -1511,15 +1487,16 @@ def save_dataset_project(project, new_name, source_folder, manifest, language):
     payload.update({
         "project_name": safe,
         "source_folder": str(source_folder or ""),
-        "manifest": str(manifest or ""),
+        "manifest": str(manifest or payload.get("manifest") or ""),
         "language": LANGUAGES.get(language, language),
     })
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"))
     choices = _training_project_choices()
     _publish_global_status(t('Dataset project'), t('Project saved: {0}', safe), "success", t('Prepared manifest: {0}', manifest or 'not prepared yet'))
     return gr.update(choices=choices, value=safe), safe, t('Project saved: {0}', safe)
 
 
+@project_transaction
 def clone_dataset_project(project_name):
     from indextts_training.dataset import clone_project, dataset_summary
     try:
@@ -1541,6 +1518,7 @@ def clone_dataset_project(project_name):
     )
 
 
+@project_transaction
 def save_training_project(
     project_name, source_folder, manifest, dataset_language,
     adapter_name, vram, mode, steps, epochs, save_steps, save_epochs,
@@ -1620,7 +1598,7 @@ def save_training_project(
         "eval_whisper_model": str(eval_whisper_model),
         "eval_whisper_language": str(eval_whisper_language),
     }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"))
     choices = _training_project_choices()
     _publish_global_status(t('LoRA project'), t('Training project saved: {0}', safe), "success", t('Prepared dataset: {0}', manifest or 'not linked'))
     return (
@@ -1630,6 +1608,7 @@ def save_training_project(
     )
 
 
+@project_transaction
 def clone_lora_project(project_name):
     from indextts_training.dataset import clone_project
     try:
@@ -1698,14 +1677,15 @@ def load_full_training_project(project_name):
         tr.get("eval_reference") or None,
         tr.get("eval_reference_transcript", ""),
         eval_language_label,
-        tr.get("eval_whisper_model", "large-v3"),
-        tr.get("eval_whisper_language", "Auto-detect"),
+        "sensevoice-small-q8",
+        "Auto-detect",
         gr.update(visible=mode_value == "Steps"),
         gr.update(visible=mode_value == "Epochs"),
         t('Loaded project: {0}', project_name) if project_name else t('No project selected.'),
     )
 
 
+@project_transaction
 def delete_training_project(project_name):
     safe = _safe_name(project_name)
     if not safe:
@@ -1727,35 +1707,11 @@ def delete_training_project(project_name):
     )
 
 
-def transcribe_training_eval(audio_path, model_size, language, batch_size=8, progress=gr.Progress()):
+def transcribe_training_eval(audio_path, model_size=None, language=None, batch_size=1, progress=gr.Progress()):
     if not audio_path or not Path(str(audio_path)).is_file():
         raise gr.Error(t('Select an Eval Reference Audio file first.'))
-    from faster_whisper import WhisperModel
-    _publish_global_status(t('Eval transcription'), t('Loading Faster-Whisper for evaluation audio.'), "working", t('Model: {0} · Language: {1}', model_size or 'large-v3', language or 'Auto-detect'))
-    try:
-        progress(0.05, desc=t('Loading Faster-Whisper'))
-        model = WhisperModel(str(model_size or "large-v3"), device="cuda", compute_type="float16")
-        progress(0.30, desc=t('Transcribing evaluation reference'))
-        segments, _ = model.transcribe(
-            str(audio_path),
-            language=None if not language or language == "Auto-detect" else str(language),
-            vad_filter=True,
-        )
-        result = " ".join(segment.text.strip() for segment in segments).strip()
-        del model
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-        progress(1.0, desc=t('Done'))
-        _play_completion_sound()
-        _publish_global_status(t('Eval transcription'), t('Evaluation reference transcription complete.'), "success", t('{0} characters transcribed.', len(result)))
-        return result, t('Evaluation reference transcription complete.')
-    except Exception as exc:
-        _publish_global_status(t('Eval transcription'), t('Evaluation transcription failed: {0}', type(exc).__name__), "error", str(exc))
-        raise
+    result = transcribe_inference_reference(NONE_SENTINEL, audio_path, progress=progress)
+    return result, t('Evaluation reference transcription complete.')
 
 
 def training_autotune(project, vram):
@@ -1789,6 +1745,11 @@ def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_ste
     if not manifest or not Path(manifest).is_file():
         _publish_global_status(t('LoRA training'), t('A valid prepared dataset is required before training.'), "error")
         raise gr.Error(t('Prepare/select a valid dataset project first.'))
+    from indextts_training.dataset import validate_project_manifest
+    try:
+        validate_project_manifest(project, manifest, str(TRAINING_DIR))
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
     safe=_safe_name(adapter)
     if not safe:
         _publish_global_status(t('LoRA training'), t('An adapter name is required before training.'), "error")
@@ -1806,7 +1767,7 @@ def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_ste
          'differentiable_asr_enabled':False,'differentiable_asr_weight':0.0,
          'differentiable_asr_model':'large-v3','asr_cfm_steps':4,'asr_cfm_temperature':1.0,
          'language':str(meta.get('language','ES')),
-         'resume':None if not resume or resume==NONE_SENTINEL else resume,'seed':1234,'vram':vram,'project':project,
+         'resume':None if not resume or resume==NONE_SENTINEL else resume,'seed':1234,'vram':vram,'project':project,'training_root':str(TRAINING_DIR),
          'eval_enabled':bool(eval_enabled),'eval_text':str(eval_text or '').strip(),'eval_reference':str(eval_reference or ''),
          'eval_reference_transcript':str(eval_reference_transcript or '').strip(),'eval_language':LANGUAGES.get(eval_language,eval_language)}
     (out/'training_config.json').parent.mkdir(parents=True,exist_ok=True); (out/'training_config.json').write_text(json.dumps(cfg,indent=2),encoding='utf-8')
@@ -1872,6 +1833,63 @@ def reload_training_tensorboard(project, adapter):
     _publish_global_status(t('TensorBoard'), result, "success", t('Workspace: {0} · Log directory: {1}', safe, log))
     return result
 
+def proofreading_context(folder, project, language, ui_language):
+    return json.dumps(dict(type="proofread-context", directory=str(folder or ""),
+                           project=project or "", language=LANGUAGES.get(language, language),
+                           ui_language=ui_language), ensure_ascii=False)
+
+
+def handle_proofread_event(raw, current_project):
+    from indextts_training.dataset import load_project, dataset_summary
+    unchanged = lambda: gr.update()
+    try:
+        data = json.loads(raw)
+        project = data.get("project") or ""
+        if data.get("type") == "proofread-context-rejected":
+            language = next((name for name, code in LANGUAGES.items() if code == data.get("language")), "Chinese")
+            meta = load_project(project, str(TRAINING_DIR))
+            return (data.get("directory", ""), gr.update(value=project or None), language,
+                    meta.get("manifest", ""), meta.get("manifest", ""), localize_backend_message(dataset_summary(meta.get("stats", {}))))
+        if data.get("type") == "proofread-updated" and project == (current_project or ""):
+            meta = load_project(project, str(TRAINING_DIR)) if project else {}
+            return (data.get("directory") or unchanged(), unchanged(), unchanged(),
+                    meta.get("manifest", ""), meta.get("manifest", ""), localize_backend_message(dataset_summary(meta.get("stats", {}))))
+    except (ValueError, OSError, TypeError):
+        pass
+    return tuple(unchanged() for _ in range(6))
+
+
+PROOFREAD_BRIDGE = r"""() => {
+    if (window.__proofreadBridgeInstalled) return;
+    window.__proofreadBridgeInstalled = true;
+    window.addEventListener('message', event => {
+        const frame = document.getElementById('proofread-frame');
+        if (!frame || event.origin !== location.origin || event.source !== frame.contentWindow) return;
+        const data = event.data || {};
+        if (data.type === 'proofread-ready') {
+            if (window.__proofreadContext) frame.contentWindow.postMessage(window.__proofreadContext, location.origin);
+        } else if (['proofread-context-rejected','proofread-updated'].includes(data.type)) {
+            const input = document.querySelector('#proofread-event textarea, #proofread-event input');
+            const button = document.querySelector('#proofread-event-button button') || document.getElementById('proofread-event-button');
+            if (input && button) {
+                const setter = Object.getOwnPropertyDescriptor(input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set;
+                setter.call(input, JSON.stringify({...data, nonce: Date.now()}));
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                setTimeout(() => button.click(), 50);
+            }
+        }
+    });
+}"""
+PROOFREAD_CONTEXT_JS = r"""raw => {
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (JSON.stringify(window.__proofreadContext) === JSON.stringify(data)) return;
+    window.__proofreadContext = data;
+    const frame = document.getElementById('proofread-frame');
+    if (frame) frame.contentWindow.postMessage(data, location.origin);
+}"""
+
+
 _install_console_mirror()
 
 if __name__ == "__main__":
@@ -1882,7 +1900,7 @@ _INITIAL_CAPS = acceleration_capabilities()
 _INITIAL_RUNTIME = normalize_runtime_settings(_load_runtime_settings(), _INITIAL_CAPS)
 
 
-with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
+with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hidden-bridge {display:none!important}") as demo:
     with gr.Row(elem_classes="title-section"):
         with gr.Column(scale=6):
             ui_language = gr.Dropdown(
@@ -1926,16 +1944,11 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
                         label=t('Reference Transcript (optional)'), lines=4,
                         placeholder=t('Enter the exact words spoken in this reference audio, or transcribe them below.'),
                     )
-                    with gr.Accordion(t('🛰️ Faster-Whisper Transcription (Optional)'), open=False):
-                        prep_whisper_model = gr.Dropdown(
-                            localized_choices(["large-v3", "medium", "small", "base", "tiny"]),
-                            value="large-v3", label=t('Model'),
-                        )
-                        prep_whisper_language = gr.Dropdown(
-                            localized_choices(["Auto-detect", "en", "es", "ja", "zh", "ar"]),
-                            value="Auto-detect", label=t('Language'),
-                        )
-                        prep_whisper_batch = gr.Slider(1, 32, 8, step=1, label=t('Batch Size'))
+                    with gr.Accordion(t('🛰️ SenseVoice Transcription (Optional)'), open=False):
+                        prep_whisper_model = gr.State("sensevoice-small-q8")
+                        prep_whisper_language = gr.State("Auto-detect")
+                        prep_whisper_batch = gr.State(1)
+                        gr.Markdown(t('SenseVoiceSmall Q8 · CPU · automatic language detection'))
                         prep_transcribe_btn = gr.Button(t('Transcribe Now'), variant="secondary")
                         prep_transcribe_status = gr.State("")
                     voice_name = gr.Textbox(label=t('Voice Name'), placeholder=t('e.g. narrator_es'), lines=1)
@@ -2063,19 +2076,14 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
                                 label=t('Reference Transcript (optional)'), lines=4,
                                 placeholder=t('Enter the exact words spoken in the reference audio, or transcribe them below.'),
                             )
-                            with gr.Accordion(t('🛰️ Faster-Whisper Transcription (Optional)'), open=False):
-                                infer_reference_whisper_model = gr.Dropdown(
-                                    localized_choices(["large-v3", "medium", "small", "base", "tiny"]),
-                                    value="large-v3", label=t('Model'),
-                                )
-                                infer_reference_whisper_language = gr.Dropdown(
-                                    localized_choices(["Auto-detect", "en", "es", "ja", "zh", "ar"]),
-                                    value="Auto-detect", label=t('Language'),
-                                )
-                                infer_reference_whisper_batch = gr.Slider(1, 32, 8, step=1, label=t('Batch Size'))
+                            with gr.Accordion(t('🛰️ SenseVoice Transcription (Optional)'), open=False):
+                                infer_reference_whisper_model = gr.State("sensevoice-small-q8")
+                                infer_reference_whisper_language = gr.State("Auto-detect")
+                                infer_reference_whisper_batch = gr.State(1)
+                                gr.Markdown(t('SenseVoiceSmall Q8 · CPU · automatic language detection'))
                                 infer_reference_auto_transcribe = gr.Checkbox(
                                     False, label=t('Auto-transcribe when the field is empty'),
-                                    info=t('Uses the selected Faster-Whisper model immediately before generation.'),
+                                    info=t('Uses SenseVoiceSmall Q8 on CPU immediately before generation.'),
                                 )
                                 infer_reference_transcribe_btn = gr.Button(t('Transcribe Now'), variant="secondary")
                                 infer_reference_transcribe_status = gr.State("")
@@ -2209,7 +2217,7 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
             gr.Markdown(t('*Organize project audio/transcripts and prepare an IndexTTS 2.5 training manifest.*'), elem_classes=["tab-subtitle"])
             with gr.Accordion(t('📖 Quick Guide'), open=False, elem_classes=["quick-guide"]):
                 gr.Markdown(
-                    t('Create or select a project, choose the source audio folder and language, then Build / Scan Dataset. Use Missing Transcript ASR only when transcript files are absent. Prepare Dataset writes the reusable manifest.')
+                    t('Create or select a project and save its source folder and language. Recognize missing text in the proofreading workbench, review and save transcripts, then update the training manifest.')
                 )
 
             with gr.Row(elem_classes=["project-strip"]):
@@ -2235,24 +2243,16 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
             dataset_summary_box = gr.State("")
             dataset_stats_state = gr.State("")
 
-            with gr.Accordion(t('🛰️ Missing Transcript ASR'), open=True):
-                dataset_transcribe = gr.Checkbox(True, label=t('Transcribe Missing .txt Files'))
-                with gr.Row():
-                    dataset_whisper_model = gr.Dropdown(
-                        localized_choices(["large-v3", "medium", "small", "base", "tiny"]),
-                        value="large-v3", label=t('Faster-Whisper Model'),
-                    )
-                    dataset_whisper_language = gr.Dropdown(
-                        localized_choices(["Auto-detect", "en", "es", "ja", "zh", "ar"]),
-                        value="Auto-detect", label=t('Whisper Language'),
-                    )
-                    dataset_asr_batch = gr.Slider(1, 32, 8, step=1, label=t('Batch Size'))
-                gr.Markdown(t('Clip duration limits are calculated automatically from the selected dataset.'))
+            dataset_transcribe = gr.State(False)
+            dataset_whisper_model = gr.State("sensevoice-small-q8")
+            dataset_whisper_language = gr.State("Auto-detect")
+            dataset_asr_batch = gr.State(1)
+            gr.Markdown(t('Recognize missing text and proofread below. Save the project before updating its manifest.'))
+            proofread_context = gr.Textbox(value="", visible=False)
+            proofread_event = gr.Textbox(value="", elem_id="proofread-event", elem_classes=["proofread-hidden-bridge"])
+            proofread_event_btn = gr.Button("Sync proofreading", elem_id="proofread-event-button", elem_classes=["proofread-hidden-bridge"])
+            proofread_frame = gr.HTML('<iframe id="proofread-frame" src="/proofread/" title="Audio proofreading" style="width:100%;height:1000px;border:0;border-radius:12px" allow="autoplay"></iframe>')
 
-            dataset_prepare_btn = gr.Button(
-                t('Prepare Dataset'), variant="primary",
-                elem_classes=["training-wide-action", "training-orange"],
-            )
             dataset_manifest = gr.Textbox(label=t('Prepared Manifest'), interactive=False)
             dataset_project_status = gr.State("")
 
@@ -2337,13 +2337,10 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
                         )
                         eval_reference_transcript = gr.Textbox(label=t('Eval Reference Transcript'), lines=3)
                 with gr.Row():
-                    eval_whisper_model = gr.Dropdown(
-                        localized_choices(["large-v3", "medium", "small", "base", "tiny"]), value="large-v3", label=t('Transcription Model')
-                    )
-                    eval_whisper_language = gr.Dropdown(
-                        localized_choices(["Auto-detect", "en", "es", "ja", "zh", "ar"]), value="Auto-detect", label=t('Speech Language')
-                    )
-                    eval_asr_batch = gr.Slider(1, 32, 8, step=1, label=t('Batch Size'))
+                    eval_whisper_model = gr.State("sensevoice-small-q8")
+                    eval_whisper_language = gr.State("Auto-detect")
+                    eval_asr_batch = gr.State(1)
+                    gr.Markdown(t('SenseVoiceSmall Q8 · CPU · automatic language detection'))
                 eval_transcribe_btn = gr.Button(t('🛰️ Transcribe Eval Audio'), variant="secondary")
                 eval_transcribe_status = gr.State("")
 
@@ -2386,7 +2383,7 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
     dataset_browse_source.click(
         browse_dataset_folder, dataset_source_folder, dataset_source_folder,
         queue=False, show_progress="hidden",
-    )
+    ).then(proofreading_context, [dataset_source_folder, dataset_project_select, dataset_language, ui_language], proofread_context, queue=False)
     dataset_create_project.click(
         create_dataset_project, dataset_project_name,
         [dataset_project_select, dataset_project_name, dataset_project_status],
@@ -2424,6 +2421,7 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
         [train_project, dataset_project_select, dataset_project_status],
         queue=False, show_progress="hidden",
     )
+    proofread_inputs = [dataset_source_folder, dataset_project_select, dataset_language, ui_language]
     dataset_project_select.change(
         load_training_project,
         dataset_project_select,
@@ -2438,29 +2436,25 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
         dataset_project_select,
         [train_project, dataset_manifest_train, autotune_status],
         queue=False, show_progress="hidden",
-    )
+    ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    demo.load(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    dataset_source_folder.submit(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    dataset_source_folder.blur(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    for context_control in (dataset_language, ui_language):
+        context_control.input(proofreading_context, proofread_inputs, proofread_context, queue=False, show_progress="hidden")
+    proofread_context.change(None, proofread_context, None, js=PROOFREAD_CONTEXT_JS, queue=False)
+    proofread_event_btn.click(handle_proofread_event, [proofread_event, dataset_project_select],
+                              [dataset_source_folder, dataset_project_select, dataset_language,
+                               dataset_manifest, dataset_manifest_train, dataset_summary_box],
+                              queue=False, show_progress="hidden")
+
     dataset_build_scan_btn.click(
         scan_training_dataset,
         [dataset_source_folder],
         [dataset_summary_box, dataset_stats_state],
     )
-    dataset_prepare_btn.click(
-        prepare_training_dataset,
-        [
-            dataset_source_folder, dataset_project_name, dataset_project_select, dataset_language,
-            dataset_transcribe,
-            dataset_whisper_model, dataset_whisper_language, dataset_asr_batch,
-        ],
-        [dataset_summary_box, dataset_project_select, dataset_manifest, train_project,
-         dataset_manifest_train, autotune_status],
-    ).then(
-        lambda summary: t('Dataset prepared. {0}', summary),
-        dataset_summary_box, dataset_project_status,
-        queue=False, show_progress="hidden",
-    )
-
     train_project.change(
-        load_full_training_project,
+        lambda name: (*load_full_training_project(name), gr.update(value=name)),
         train_project,
         [
             dataset_source_folder, dataset_manifest_train, dataset_summary_box, dataset_language,
@@ -2470,10 +2464,10 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
             phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
             eval_enabled, eval_text, eval_reference, eval_reference_transcript,
             eval_language, eval_whisper_model, eval_whisper_language,
-            steps_group, epochs_group, autotune_status,
+            steps_group, epochs_group, autotune_status, dataset_project_select,
         ],
         queue=False, show_progress="hidden",
-    )
+    ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
     mode.change(training_mode_visibility, mode, [steps_group, epochs_group], queue=False)
 
     autotune_btn.click(
@@ -2701,4 +2695,7 @@ with gr.Blocks(title=t(APP_TITLE), css=CSS) as demo:
 
 
 if __name__ == "__main__":
-    demo.queue(default_concurrency_limit=1).launch(inbrowser=True, server_name=os.environ.get("INDEXTTS_HOST", "127.0.0.1"), server_port=int(os.environ.get("INDEXTTS_PORT", "7860")), show_error=True)
+    from indextts_training.proofread import create_proofread_router
+    from indextts_training import TRAINING_MANAGER
+    proofread_router = create_proofread_router(ROOT, ASR_SERVICE, lambda: TRAINING_MANAGER.snapshot()["running"])
+    demo.queue(default_concurrency_limit=1).launch(app_kwargs={"routes": proofread_router.routes}, inbrowser=True, server_name=os.environ.get("INDEXTTS_HOST", "127.0.0.1"), server_port=int(os.environ.get("INDEXTTS_PORT", "7860")), show_error=True)
