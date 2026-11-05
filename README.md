@@ -155,6 +155,20 @@ GUI 支持选择检查点续训，也可在推理页选择已保存的检查点�
 
 ## 导出完整 GPT checkpoint
 
+GUI 中打开训练页旁的 **“📦 导出 GPT 检查点”**：
+
+1. 从列表选择 `final_adapter` 或某次 `checkpoint-step-*`，也可填写或浏览自定义适配器目录。
+2. 默认选择“通过浏览器下载”，填写 `.pth` 文件名；导出验证完成后，分别下载模型与 `.merge.json` 报告。浏览器决定文件的实际保存位置。
+3. 如需直接存到 ComfyUI 等目录，切换“保存到服务器路径”，填写运行 GUI 的电脑上的完整 `.pth` 路径，或点击“在服务器上另存为”。选择路径和启动导出是两个独立操作；取消选择不会启动任务。通过局域网使用时，系统保存窗口出现在服务器，不是浏览器设备上。
+4. 在高级设置确认训练时的原始 FP32 底模与 `config.yaml`；可选填写部署底模做 SHA-256 一致性检查。
+5. 点击导出后查看阶段、耗时及日志。任务可取消；只有成功且验证完成的任务才显示下载链接。已有输出文件不会被覆盖。
+
+导出在后台 CPU 子进程中执行，GUI 可以继续响应。浏览器下载模式先将完整结果保留在服务器的 `outputs/exports/<task_id>/`，再通过专用下载接口传输，不使用 Gradio 文件组件复制大模型。手动路径模式直接保存到指定服务器位置。任务日志保存在 `.runtime/export/logs/<task_id>.log`。
+
+训练与导出互斥：训练运行时不能启动导出，导出运行时不能启动训练；同一 GUI 实例同时只运行一个导出任务。适配器信息中的历史训练模型目录只作为记录显示，不证明当前权重与训练时相同，也不会替换高级设置中的默认底模路径。导出完成后，状态区显示张量数量、基础模型与输出 SHA-256，以及保存回读检查结果。
+
+命令行方式仍然可用：
+
 `tools/merge_lora_to_pth.py` 在 CPU 上将 LoRA 合入训练时的原始 FP32 `gpt.pth`，输出完整 GPT checkpoint，供兼容的 ComfyUI IndexTTS-2.5 节点加载。
 
 ```powershell
@@ -206,6 +220,8 @@ rem set "HTTPS_PROXY=http://127.0.0.1:7890"
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_proofread.py
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_dataset_proofread.py
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_easy_gui_i18n.py
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p 'test_export*.py'
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_merge_export.py
 node tests/test_proofread_frontend.cjs
 ```
 

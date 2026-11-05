@@ -68,8 +68,10 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 import gradio as gr
 from indextts_training.asr import AsrService
 from indextts_training.dataset import project_transaction, _atomic_write
+from indextts_training.export import ExportManager, create_export_router, adapter_details, choose_export_path
 
 ASR_SERVICE = AsrService(ROOT)
+EXPORT_MANAGER = ExportManager(ROOT)
 
 from indextts.utils.text_chunking import CHUNK_CHOICES, split_long_text
 
@@ -1833,6 +1835,119 @@ def reload_training_tensorboard(project, adapter):
     _publish_global_status(t('TensorBoard'), result, "success", t('Workspace: {0} · Log directory: {1}', safe, log))
     return result
 
+def checkpoint_export_adapter_info(adapter):
+    """Resolve adapter metadata without loading model weights."""
+    path = str(adapter or "").strip()
+    default_base = str(MODEL_DIR / "gpt.pth")
+    if not path or path == NONE_SENTINEL:
+        return "voice_checkpoint.pth", default_base, t('Select a final adapter or a saved checkpoint to export.')
+    info = adapter_details(path)
+    training_base = str(info.get("training_base") or "")
+    if not info.get("valid"):
+        notice = str(info.get("error") or t('The adapter folder is not valid.'))
+    elif training_base:
+        notice = t('Recorded training model directory: {0}. This historical path does not verify the identity of its weights; confirm the original FP32 base below.', training_base)
+    else:
+        notice = t('Ready to export: {0}', path)
+    return str(info.get("filename") or "voice_checkpoint.pth"), default_base, notice
+
+
+def select_checkpoint_export_adapter(selected):
+    path = "" if selected in (None, "", NONE_SENTINEL) else str(selected)
+    return path, *checkpoint_export_adapter_info(path)
+
+
+def checkpoint_export_mode_visibility(mode):
+    return gr.update(visible=mode == "browser"), gr.update(visible=mode == "path")
+
+
+def browse_checkpoint_export_destination(current, filename):
+    initial = str(current or (OUTPUTS_DIR / "merged" / Path(str(filename or "voice_checkpoint.pth")).name))
+    selected, error = choose_export_path(initial, t('Save exported GPT checkpoint on the GUI server'))
+    if error:
+        return gr.update(), str(error)
+    if not selected:
+        return gr.update(), t('Destination selection cancelled. No export was started.')
+    return selected, t('Server destination selected: {0}', selected)
+
+
+def checkpoint_export_values(snapshot):
+    """Render a manager snapshot; only successful tasks expose download links."""
+    from html import escape
+    from urllib.parse import quote
+
+    state = str(snapshot.get("status") or "idle")
+    phase = str(snapshot.get("phase") or "idle")
+    state_labels = {
+        "idle": t('Export idle'), "running": t('Export running'),
+        "cancelling": t('Export cancellation requested'), "succeeded": t('Export complete'),
+        "failed": t('Export failed'), "cancelled": t('Export cancelled'),
+    }
+    phase_labels = {
+        "idle": t('Waiting for an export'), "starting": t('Starting CPU exporter'),
+        "hashing": t('Hashing and checking source files'), "building": t('Building and merging the CPU model'),
+        "checking": t('Checking tensor structure and values'), "saving": t('Saving the checkpoint'),
+        "verifying": t('Verifying saved weights'), "publishing": t('Publishing the completed export'),
+        "completed": t('Validation complete'), "failed": t('Export failed'), "cancelled": t('Export cancelled'),
+    }
+    elapsed = max(0.0, float(snapshot.get("elapsed") or 0.0))
+    status = t('{0} · {1} · Elapsed {2:.1f}s', state_labels.get(state, state), phase_labels.get(phase, phase), elapsed)
+    if snapshot.get("error"):
+        status += "\n" + str(snapshot["error"])
+    report = snapshot.get("report") or {}
+    if state == "succeeded" and report:
+        status += "\n" + t('Validated tensors: {0} · LoRA targets: {1} · Changed tensors: {2}',
+            report.get("tensor_count", "—"), report.get("lora_target_count", "—"), report.get("changed_tensor_count", "—"))
+        if report.get("base_sha256"):
+            status += "\n" + t('Base SHA-256: {0}', report["base_sha256"])
+        if report.get("output_sha256"):
+            status += "\n" + t('Export SHA-256: {0}', report["output_sha256"])
+        if "cpu_forward_max_abs_difference" in report:
+            status += "\n" + t('CPU forward maximum absolute difference: {0}', report["cpu_forward_max_abs_difference"])
+        status += "\n" + t('Source files unchanged: {0} · Saved tensors identical: {1}',
+            t('Yes') if report.get("source_files_unchanged") is True else t('Not verified'),
+            t('Yes') if report.get("round_trip_tensors_identical") is True else t('Not verified'))
+    output = str(snapshot.get("output") or "")
+    links = ""
+    if state == "succeeded" and snapshot.get("task_id") and snapshot.get("token"):
+        task = quote(str(snapshot["task_id"]), safe="")
+        token = quote(str(snapshot["token"]), safe="")
+        model_name = Path(output).name or "checkpoint.pth"
+        report_name = str(Path(model_name).with_suffix(".merge.json"))
+        parts = []
+        for kind, label, filename in (("model", t('Download GPT checkpoint (.pth)'), model_name),
+                                      ("report", t('Download validation report (.merge.json)'), report_name)):
+            url = f"/exports/{task}/{kind}?token={token}"
+            parts.append(f'<a href="{escape(url, quote=True)}" download="{escape(filename, quote=True)}" '
+                         f'style="display:inline-block;margin:6px 16px 6px 0">{escape(label)}</a>')
+        links = '<div class="export-downloads">' + "".join(parts) + '</div>'
+    active = state in ("running", "cancelling")
+    return status, str(snapshot.get("log") or ""), output, links, gr.update(interactive=not active), gr.update(interactive=state == "running")
+
+
+def checkpoint_export_snapshot():
+    return checkpoint_export_values(EXPORT_MANAGER.snapshot())
+
+
+def start_checkpoint_export(adapter, mode, filename, destination, base, config, expected_base):
+    path = str(adapter or "").strip()
+    if not path or path == NONE_SENTINEL:
+        raise gr.Error(t('Select a final adapter or a saved checkpoint to export.'))
+    target = str((filename if mode == "browser" else destination) or "").strip()
+    if not target:
+        raise gr.Error(t('Enter an export filename or server destination first.'))
+    try:
+        snapshot = EXPORT_MANAGER.start(path, mode, target, str(base or "").strip(),
+                                        str(config or "").strip(), str(expected_base or "").strip())
+    except Exception as exc:
+        raise gr.Error(str(exc)) from exc
+    return checkpoint_export_values(snapshot)
+
+
+def cancel_checkpoint_export():
+    return checkpoint_export_values(EXPORT_MANAGER.cancel())
+
+
 def proofreading_context(folder, project, language, ui_language):
     return json.dumps(dict(type="proofread-context", directory=str(folder or ""),
                            project=project or "", language=LANGUAGES.get(language, language),
@@ -2361,6 +2476,46 @@ with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hi
             training_message = gr.State("")
             training_timer = gr.Timer(1.0)
 
+        with gr.Tab(t('📦 Export GPT Checkpoint'), id="tab_export_checkpoint"):
+            gr.Markdown(t('Merge a trained LoRA into a complete FP32 GPT checkpoint on CPU. Download it in this browser or save it to a path on the GUI server.'), elem_classes=["tab-subtitle"])
+            with gr.Row():
+                export_adapter_select = gr.Dropdown(choices=_adapter_choices(), value=NONE_SENTINEL,
+                    label=t('Trained Adapter / Checkpoint'), scale=7)
+                export_refresh_adapters = gr.Button(t('🔄 Refresh Adapters'), scale=1)
+            with gr.Row():
+                export_adapter_path = gr.Textbox(label=t('Selected or Custom Adapter Folder'),
+                    placeholder=t('Folder containing adapter_config.json and adapter_model.safetensors'), scale=8)
+                export_browse_adapter = gr.Button(t('📁 Browse on Server'), scale=1)
+            export_adapter_notice = gr.Textbox(value=t('Select a final adapter or a saved checkpoint to export.'),
+                label=t('Adapter details'), interactive=False, lines=2)
+            export_mode = gr.Radio(choices=[(t('Download in Browser'), "browser"), (t('Save to Server Path'), "path")],
+                value="browser", label=t('Export Destination'))
+            with gr.Group(visible=True) as export_browser_group:
+                export_filename = gr.Textbox(value="voice_checkpoint.pth", label=t('Download Filename'),
+                    info=t('After validation, use the download links below. Your browser decides where to save the files.'))
+            with gr.Group(visible=False) as export_path_group:
+                with gr.Row():
+                    export_destination = gr.Textbox(label=t('Full Server Output Path'), scale=8,
+                        placeholder=t('An absolute .pth path on the computer running the GUI'))
+                    export_browse_destination = gr.Button(t('📁 Save As on Server'), scale=1)
+                gr.Markdown(t('The save dialog opens on the GUI server. For remote access, type a server path or use browser download. Existing files are never overwritten.'))
+            export_destination_notice = gr.Textbox(label=t('Destination status'), interactive=False, lines=1)
+            with gr.Accordion(t('Advanced: Base Model and Verification'), open=False):
+                export_base = gr.Textbox(value=str(MODEL_DIR / "gpt.pth"), label=t('Original FP32 Training Base (.pth)'),
+                    info=t('Use the same original GPT weights used to train this adapter.'))
+                export_config = gr.Textbox(value=str(MODEL_DIR / "config.yaml"), label=t('IndexTTS Model Config (.yaml)'))
+                export_expected_base = gr.Textbox(value="", label=t('Deployment Base to Compare (optional)'),
+                    info=t('If set, its SHA-256 must match the training base before merging.'))
+            with gr.Row():
+                export_start_btn = gr.Button(t('📦 Export GPT Checkpoint'), variant="primary")
+                export_cancel_btn = gr.Button(t('Cancel Export'), variant="stop", interactive=False)
+            export_status = gr.Textbox(value=t('Waiting for an export'), label=t('Export Status'), interactive=False, lines=3, max_lines=9)
+            export_output = gr.Textbox(label=t('Exported File on Server'), interactive=False)
+            export_downloads = gr.HTML("")
+            with gr.Accordion(t('Export Log'), open=True):
+                export_log = gr.Textbox(label=t('CPU Export Log'), interactive=False, lines=10, max_lines=18)
+            export_timer = gr.Timer(1.0)
+
     # Internal sinks keep existing event callbacks harmless without exposing
     # a second layer of status fields in the visual workflow.
     runtime_status = gr.State("")
@@ -2693,9 +2848,30 @@ with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hi
     global_status_timer.tick(global_status_text, None, global_status_panel, queue=False, show_progress="hidden")
     cmd_console_timer.tick(console_html, None, cmd_console, queue=False, show_progress="hidden")
 
+    export_outputs = [export_status, export_log, export_output, export_downloads, export_start_btn, export_cancel_btn]
+    export_adapter_select.change(select_checkpoint_export_adapter, export_adapter_select,
+        [export_adapter_path, export_filename, export_base, export_adapter_notice], queue=False)
+    export_refresh_adapters.click(refresh_adapters, export_adapter_select, export_adapter_select, queue=False)
+    export_browse_adapter.click(browse_checkpoint_folder, export_adapter_path, export_adapter_path,
+        queue=False).then(checkpoint_export_adapter_info, export_adapter_path,
+        [export_filename, export_base, export_adapter_notice], queue=False)
+    for export_path_event in (export_adapter_path.submit, export_adapter_path.blur):
+        export_path_event(checkpoint_export_adapter_info, export_adapter_path,
+            [export_filename, export_base, export_adapter_notice], queue=False)
+    export_mode.change(checkpoint_export_mode_visibility, export_mode,
+        [export_browser_group, export_path_group], queue=False)
+    export_browse_destination.click(browse_checkpoint_export_destination,
+        [export_destination, export_filename], [export_destination, export_destination_notice], queue=False)
+    export_start_btn.click(start_checkpoint_export,
+        [export_adapter_path, export_mode, export_filename, export_destination, export_base, export_config, export_expected_base],
+        export_outputs, queue=False)
+    export_cancel_btn.click(cancel_checkpoint_export, None, export_outputs, queue=False)
+    export_timer.tick(checkpoint_export_snapshot, None, export_outputs, queue=False, show_progress="hidden")
+
 
 if __name__ == "__main__":
     from indextts_training.proofread import create_proofread_router
     from indextts_training import TRAINING_MANAGER
     proofread_router = create_proofread_router(ROOT, ASR_SERVICE, lambda: TRAINING_MANAGER.snapshot()["running"])
-    demo.queue(default_concurrency_limit=1).launch(app_kwargs={"routes": proofread_router.routes}, inbrowser=True, server_name=os.environ.get("INDEXTTS_HOST", "127.0.0.1"), server_port=int(os.environ.get("INDEXTTS_PORT", "7860")), show_error=True)
+    export_router = create_export_router(EXPORT_MANAGER)
+    demo.queue(default_concurrency_limit=1).launch(app_kwargs={"routes": [*proofread_router.routes, *export_router.routes]}, inbrowser=True, server_name=os.environ.get("INDEXTTS_HOST", "127.0.0.1"), server_port=int(os.environ.get("INDEXTTS_PORT", "7860")), show_error=True)
