@@ -39,7 +39,10 @@ desktop.ini
 
 # Easy GUI project-local runtime and user data.
 /.runtime/
-/models/
+/models/*
+!/models/asr/
+/models/asr/*
+!/models/asr/README.md
 /voices/
 /emotion_descriptions/
 /accelerator_wheels/*.whl
@@ -57,3 +60,7 @@ training/outputs/
 *.onnx
 *.pth.partial
 *.merge.json
+
+# ASR weights and proofreading state are local user data.
+*.gguf
+**/.proofread/
