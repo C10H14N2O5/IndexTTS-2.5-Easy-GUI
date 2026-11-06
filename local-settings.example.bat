@@ -1,6 +1,6 @@
 @echo off
 rem Copy to local-settings.bat and edit only the settings you need.
-rem Both install and run scripts load this optional local file.
+rem Install, run and ZIP update scripts load this optional local file.
 set "INDEXTTS_HOST=127.0.0.1"
 set "INDEXTTS_PORT=7860"
 rem Optional proxy; otherwise inherited shell settings or direct access are used.

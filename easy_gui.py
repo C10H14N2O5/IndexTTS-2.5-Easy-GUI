@@ -27,6 +27,10 @@ if os.name == "nt":
         pass
 
 ROOT = Path(__file__).resolve().parent
+if __name__ == "__main__":
+    from tools.runtime_lock import gui_application_lock, require_clean_update
+    _APPLICATION_LOCK = gui_application_lock(ROOT)
+    require_clean_update(ROOT)
 MODEL_DIR = ROOT / "models" / "IndexTTS-2.5"
 OUTPUTS_DIR = ROOT / "outputs"
 VOICES_DIR = ROOT / "voices"

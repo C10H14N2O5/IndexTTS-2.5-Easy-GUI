@@ -1,6 +1,11 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
+if exist "%~dp0.runtime\update\transaction.json" (
+  echo [ERROR] An interrupted update needs recovery. Run 3- update.bat first.
+  pause
+  exit /b 1
+)
 
 rem Optional machine-local settings; this file is excluded from Git.
 if exist "%~dp0local-settings.bat" call "%~dp0local-settings.bat"
@@ -39,24 +44,7 @@ if not exist "outputs" mkdir "outputs"
 if not exist "voices" mkdir "voices"
 if not exist "emotion_descriptions" mkdir "emotion_descriptions"
 
-"%PY_EXE%" "%CD%\tools\ensure_ffmpeg.py"
-if errorlevel 1 exit /b 1
-
-"%PY_EXE%" "%CD%\tools\verify_cuda.py"
-if errorlevel 1 (
-  echo [ERROR] The fixed CUDA runtime is unavailable or was modified. Rerun install.bat.
-  pause
-  exit /b 1
-)
-"%PY_EXE%" "%CD%\tools\verify_numpy.py"
-if errorlevel 1 (
-  echo [ERROR] The project NumPy installation is incomplete or shadowed.
-  echo Run 1- install.bat with this project folder as the working directory.
-  pause
-  exit /b 1
-)
-
-"%PY_EXE%" "%CD%\easy_gui.py"
+"%PY_EXE%" -B "%CD%\tools\run_gui.py"
 if errorlevel 1 (
   echo.
   echo [ERROR] IndexTTS 2.5 Easy GUI exited with an error.

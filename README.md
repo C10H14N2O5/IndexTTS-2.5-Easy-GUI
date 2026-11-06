@@ -16,6 +16,7 @@ A Windows GUI for IndexTTS 2.5 with voice cloning, emotion control, multi-speake
 | 语料识别与校对 | SenseVoiceSmall Q8 CPU 批量补缺、单条重识别、递归目录扫描、倍速试听、文本编辑和校对进度 |
 | LoRA 微调 | 项目管理、训练清单检查、Steps / Epochs、参数预设、检查点、续训、评估音频和 TensorBoard |
 | 导出与运行状态 | CPU 合并完整 GPT `.pth`、运行日志、显存状态，以及可用时的 BF16、Triton / torch.compile、FlashAttention 推理选项 |
+| 程序更新 | 无需 Git 的 ZIP 更新、依赖变更拦截、失败恢复和上一次版本回滚 |
 
 ## 环境与安装
 
@@ -185,7 +186,33 @@ GUI 中打开训练页旁的 **“📦 导出 GPT 检查点”**：
 
 ## 本地配置与目录
 
-源码启动脚本会读取可选的 `local-settings.bat`。将 `local-settings.example.bat` 复制并重命名后，可设置：
+### ZIP 更新与回滚
+
+已安装运行环境的 ZIP 部署可双击 **`3- update.bat`**，或在项目目录运行：
+
+```powershell
+& '.\3- update.bat'             # 更新程序
+& '.\3- update.bat' --check     # 只检查可更新版本与兼容性
+& '.\3- update.bat' --rollback  # 回到上一次成功更新之前
+```
+
+更新器使用 Windows 自带 PowerShell 5.1 和项目已有 Python，无需 Git 或管理员权限。来源固定为本分支 `C10H14N2O5/IndexTTS-2.5-Easy-GUI` 的 GitHub `main`：先读取提交 SHA，再下载该提交 ZIP。包含 `.git` 的开发目录拒绝 ZIP 更新，请继续使用 Git 维护源码。
+
+更新前关闭 GUI、训练、导出和安装窗口；更新器不会强制结束它们。程序文件按发布清单备份和替换，模型、语料、训练结果、声音库、`.venv`、其他运行时数据和 `local-settings.bat` 均保留。新版本同名文件与用户额外文件冲突，或此前受管理源码已被本地修改时，会停止并列出冲突。首次接管不会清理未被清单记录的旧文件。
+
+**第一版不自动升级依赖。** 依赖声明、锁文件、Python 版本、安装器或环境验证逻辑变化时，更新会在替换程序前停止，提示单独升级环境。即使安装脚本只是调整说明或逻辑，也可能被保守拦截。更新器不会运行 `1- install.bat`，也不修改 CUDA、ASR 程序或模型。
+
+文件替换及离线健康检查失败时自动回滚；断电或强制关闭导致事务未完成时，再运行普通更新入口先恢复。`--check` 不执行恢复。恢复失败会保留备份并列出问题，GUI/安装器也会拒绝启动混合版本。手动回滚同样检查更新后的本地修改，不会静默覆盖冲突文件。
+
+版本、事务记录、日志及最近一次可回滚备份保存在 `.runtime/update/`，不要在未完成更新时手动删除。成功后清理 ZIP 和解压临时文件；回滚成功后不提供反向重做。健康检查只验证语法、关键导入及 GUI 配置，不启动浏览器、不加载模型、不触发训练。更新后重新启动 GUI。
+
+更新器首次随版本安装时建立本机程序哈希基线；没有记录的旧安装会在首次更新前接管本地发布清单。自行修改程序源码前应保留副本；日常监听地址和代理请放在本地配置文件中。
+
+维护者新增、删除程序文件时，须一并更新 `tools/update-manifest.json`。可将仓库受版本管理的路径列表交给 `tools/build_update_manifest.py --files-from <列表文件>` 重新生成；用户执行更新不需要 Git。保护规则会排除模型权重、语料和本地运行数据，即使它们出现在发布清单中也不允许被更新。
+
+### 本地设置
+
+安装、启动、更新入口都会读取可选的 `local-settings.bat`。将 `local-settings.example.bat` 复制并重命名后，可设置：
 
 ```bat
 set "INDEXTTS_HOST=127.0.0.1"
@@ -222,6 +249,8 @@ rem set "HTTPS_PROXY=http://127.0.0.1:7890"
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_easy_gui_i18n.py
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p 'test_export*.py'
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_merge_export.py
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p 'test_updat*.py'
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p test_runtime_lock.py
 node tests/test_proofread_frontend.cjs
 ```
 
