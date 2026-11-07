@@ -35,7 +35,7 @@ set "TORCHINDUCTOR_CACHE_DIR=%CD%\.runtime\torchinductor-cache"
 set "TORCH_EXTENSIONS_DIR=%CD%\.runtime\torch-extensions"
 
 if not exist "%PY_EXE%" (
-  echo [ERROR] Project environment not installed. Run install.bat first.
+  echo [ERROR] Project environment not installed. Run "1- install.bat" first.
   pause
   exit /b 1
 )

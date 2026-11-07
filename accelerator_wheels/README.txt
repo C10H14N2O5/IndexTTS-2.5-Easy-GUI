@@ -1,11 +1,11 @@
 Optional Windows FlashAttention wheel drop folder
 =================================================
 
-If you have a flash_attn wheel that exactly matches this environment, place it here and run:
+If you have a flash_attn wheel that exactly matches this environment, place it here and rerun:
 
-    install_accelerators.bat
+    1- install.bat
 
-Then choose FlashAttention or All.
+The installer prefers a flash_attn*.whl found in this folder over downloading one.
 
 The Easy GUI base environment targets:
 - Python 3.11

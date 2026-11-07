@@ -469,7 +469,7 @@ def cuda_status() -> str:
 
 def model_status() -> str:
     state = t('✅ **IndexTTS 2.5 model ready**') if _model_files_present() else t('⬇️ **IndexTTS 2.5 model is missing.**')
-    detail = f"`{MODEL_DIR}`" if _model_files_present() else t('`run.bat` downloads the official model automatically before the GUI starts.')
+    detail = f"`{MODEL_DIR}`" if _model_files_present() else t('`2- run.bat` downloads the official model automatically before the GUI starts.')
     return f"{state}  \n{detail}  \n{cuda_status()}"
 
 
@@ -512,7 +512,7 @@ def acceleration_status() -> str:
     return "  \n".join([
         line("Triton / torch.compile", "triton"),
         line(t('FlashAttention GPT engine'), "flash_attn"),
-        t('Optional accelerators are disabled by default. Run `install_accelerators.bat` to add or repair them.'),
+        t('Optional accelerators are disabled by default. Rerun `1- install.bat` to add or repair them.'),
     ])
 
 
@@ -815,17 +815,17 @@ def _load_model(
     options = (bool(use_bf16), bool(use_gpt_latent), bool(use_torch_compile), bool(use_flash_accel), bool(use_qwen_emo), adapter_path)
     with _MODEL_LOCK:
         if not _model_files_present():
-            raise RuntimeError(t('IndexTTS 2.5 model is missing. Restart with run.bat so the automatic model downloader can repair it.'))
+            raise RuntimeError(t('IndexTTS 2.5 model is missing. Restart with 2- run.bat so the automatic model downloader can repair it.'))
         import torch
         if not torch.cuda.is_available():
-            raise RuntimeError(t('CUDA is unavailable. This Easy GUI is configured as an NVIDIA CUDA build; rerun install.bat and check your NVIDIA driver.'))
+            raise RuntimeError(t('CUDA is unavailable. This Easy GUI is configured as an NVIDIA CUDA build; rerun 1- install.bat and check your NVIDIA driver.'))
         caps = acceleration_capabilities()
         if options[2] and not caps["triton"][0]:
-            raise RuntimeError(t('torch.compile was requested but Triton is unavailable: {0}. Run install_accelerators.bat.', caps['triton'][1]))
+            raise RuntimeError(t('torch.compile was requested but Triton is unavailable: {0}. Rerun 1- install.bat.', caps['triton'][1]))
         if options[3] and not caps["flash_attn"][0]:
-            raise RuntimeError(t('FlashAttention acceleration was requested but flash_attn is unavailable: {0}. Run install_accelerators.bat.', caps['flash_attn'][1]))
+            raise RuntimeError(t('FlashAttention acceleration was requested but flash_attn is unavailable: {0}. Rerun 1- install.bat.', caps['flash_attn'][1]))
         if options[3] and not caps["triton"][0]:
-            raise RuntimeError(t('FlashAttention acceleration was requested but Triton is unavailable: {0}. Run install_accelerators.bat.', caps['triton'][1]))
+            raise RuntimeError(t('FlashAttention acceleration was requested but Triton is unavailable: {0}. Rerun 1- install.bat.', caps['triton'][1]))
         if options[3] and not options[0]:
             raise RuntimeError(t('FlashAttention GPT acceleration requires BF16 in this Easy GUI. Enable BF16 and retry.'))
         if _MODEL is not None and _MODEL_OPTIONS == options:
