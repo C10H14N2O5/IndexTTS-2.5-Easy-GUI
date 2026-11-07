@@ -7,7 +7,7 @@
 | 路径 | 内容 |
 | --- | --- |
 | `easy_gui.py` | Gradio 界面和各页面的回调 |
-| `indextts_training/` | 数据集与训练清单、听音校对后端、ASR 调用、LoRA 训练、检查点导出、任务互斥 |
+| `indextts_training/` | 数据集与训练清单、听音校对后端、ASR 调用、LoRA 训练、检查点导出、盲测对比（`abx.py`，仅用标准库）、任务互斥 |
 | `tools/proofread/` | 内嵌听音校对工作台的前端页面 |
 | `tools/` | 安装、启动、更新脚本，环境检查（`verify_*.py`），ASR 导入，LoRA 合并，界面翻译 |
 | `indextts/` | 上游 IndexTTS 推理代码（含本项目的少量兼容修改） |
@@ -30,6 +30,7 @@ $py = '.\.venv\Scripts\python.exe'
 & $py -B -m unittest discover -s tests -p "test_*export*.py"          # 检查点导出
 & $py -B -m unittest discover -s tests -p test_merge_lora_to_pth.py   # LoRA 合并
 & $py -B -m unittest discover -s tests -p test_text_chunking.py       # 长文本分段
+& $py -B -m unittest discover -s tests -p test_abx.py                 # 盲测对比
 node tests/test_proofread_frontend.cjs                                # 校对前端状态，需要 Node.js
 ```
 

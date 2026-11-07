@@ -73,6 +73,7 @@ import gradio as gr
 from indextts_training.asr import AsrService
 from indextts_training.dataset import project_transaction, _atomic_write
 from indextts_training.export import ExportManager, create_export_router, adapter_details, choose_export_path
+from indextts_training import abx as ABX
 
 ASR_SERVICE = AsrService(ROOT)
 EXPORT_MANAGER = ExportManager(ROOT)
@@ -1952,6 +1953,287 @@ def cancel_checkpoint_export():
     return checkpoint_export_values(EXPORT_MANAGER.cancel())
 
 
+# ---------------------------------------------------------------------------
+# Blind A/B adapter comparison.  Generation runs first and is persisted under
+# outputs/abx/<id>/; rating only plays saved files.  Side identities stay out of
+# this page until the results are revealed.
+# ---------------------------------------------------------------------------
+ABX_ROOT = ABX.abx_root(OUTPUTS_DIR)
+ABX_STOP = threading.Event()
+ABX_SCORE_LABELS = {
+    -2: 'Sample 1 is clearly better', -1: 'Sample 1 is slightly better', 0: 'About the same',
+    1: 'Sample 2 is slightly better', 2: 'Sample 2 is clearly better',
+}
+ABX_SETTING_KEYS = (
+    "duration_factor", "interval_silence", "text_normalization", "max_text_tokens", "do_sample",
+    "top_p", "top_k", "temperature", "num_beams", "repetition_penalty", "length_penalty",
+    "max_mel_tokens", "use_bf16", "use_gpt_latent", "use_torch_compile", "use_flash_accel",
+)
+
+
+def _abx_error(exc):
+    if isinstance(exc, ABX.AbxError):
+        return gr.Error(t(exc.template, *exc.args_))
+    return gr.Error(t('Blind test failed: {0}: {1}', type(exc).__name__, exc))
+
+
+def abx_score_choices():
+    return [(t(ABX_SCORE_LABELS[score]), str(score)) for score in ABX.SCORES]
+
+
+def _abx_adapter_side(value):
+    path = None if not value or value == NONE_SENTINEL else str(value)
+    labels = {choice_value: label for label, choice_value in _adapter_choices()}
+    if path is None:
+        return {"label": t('Base model (no adapter)'), "path": None}
+    if not (Path(path) / "adapter_config.json").is_file():
+        raise gr.Error(t('LoRA adapter is missing adapter_config.json: {0}', path))
+    return {"label": labels.get(path, Path(path).name), "path": path}
+
+
+def abx_plan_text(texts, repetitions):
+    count = len(ABX.split_texts(texts))
+    reps = max(1, int(repetitions or 1))
+    return t('{0} sentence(s) × {1} generation(s) = {2} trial(s) and {3} clips to synthesize. Decoding and CUDA settings follow the Inference page; emotion follows the voice reference.',
+             count, reps, count * reps, count * reps * 2)
+
+
+def _abx_session_label(summary):
+    title = summary["name"] or summary["id"]
+    if summary["clips_done"] < summary["clips_total"]:
+        state = t('generated {0}/{1}', summary["clips_done"], summary["clips_total"])
+    elif summary["revealed"]:
+        state = t('revealed')
+    else:
+        state = t('rated {0}/{1}', summary["rated"], summary["trials"])
+    return f'{title} · {summary["a"]} vs {summary["b"]} · {state}'
+
+
+def abx_session_choices():
+    return [(_abx_session_label(s), s["id"]) for s in ABX.list_sessions(ABX_ROOT)]
+
+
+def abx_refresh_sessions(selected=None):
+    choices = abx_session_choices()
+    values = {value for _, value in choices}
+    return gr.update(choices=choices, value=selected if selected in values else (choices[0][1] if choices else None))
+
+
+def _abx_seed_everything(seed):
+    import random
+    import numpy as np
+    import torch
+    random.seed(seed)
+    np.random.seed(seed % 2**32)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def abx_synthesize_clip(clip, session, output):
+    """Synthesize one clip with the session's frozen settings and paired seed."""
+    s = session["settings"]
+    adapter = session[clip["side"]]["path"] or NONE_SENTINEL
+    with _MODEL_LOCK:
+        tts = _load_model(s["use_bf16"], s["use_gpt_latent"], s["use_torch_compile"], s["use_flash_accel"], False, adapter)
+        _abx_seed_everything(int(clip["seed"]))
+        result = tts.infer(
+            spk_audio_prompt=str(ABX.reference_path(session)),
+            text=session["texts"][clip["text_index"]],
+            output_path=str(output),
+            lang=LANGUAGES.get(session["language"], "EN"),
+            reference_text=session["reference"].get("transcript") or "",
+            emo_audio_prompt=None, emo_alpha=0.65, emo_vector=None, use_emo_text=False, emo_text=None,
+            use_random=False, verbose=False, stream_return=False,
+            interval_silence=int(s["interval_silence"]),
+            max_text_tokens_per_segment=int(s["max_text_tokens"]),
+            duration_factor=float(s["duration_factor"]),
+            text_normalization=bool(s["text_normalization"]),
+            do_sample=bool(s["do_sample"]), top_p=float(s["top_p"]), top_k=int(s["top_k"]),
+            temperature=float(s["temperature"]), num_beams=int(s["num_beams"]),
+            repetition_penalty=float(s["repetition_penalty"]), length_penalty=float(s["length_penalty"]),
+            max_mel_tokens=int(s["max_mel_tokens"]),
+        )
+    if not Path(output).is_file() and result and Path(str(result)).is_file():
+        shutil.move(str(result), str(output))
+
+
+def _abx_run_generation(session, progress):
+    """Shared generator body for new and resumed sessions."""
+    ABX_STOP.clear()
+    total = len(session["clips"])
+    _publish_global_status(t('Blind A/B test'), t('Generating blind test clips.'), "working")
+    print(f"[abx] Generating blind test {session['id']} | clips={total}", flush=True)
+    status = ""
+    try:
+        for step in ABX.generate_clips(session, abx_synthesize_clip, ABX_STOP.is_set):
+            done = step["done"]
+            if step.get("stopped"):
+                status = t('Stopped after {0}/{1} clips. Use Continue generating to resume.', done, total)
+                break
+            progress(done / max(total, 1), desc=t('Blind test clip {0}/{1}', min(done + 1, total), total))
+            status = t('Generating clip {0}/{1}…', min(done + 1, total), total) if step.get("starting") else t('Generated {0}/{1} clips.', done, total)
+            yield status, abx_refresh_sessions(session["id"])
+        else:
+            status = t('All {0} clips are ready. Start rating below.', total)
+            _play_completion_sound()
+    except Exception as exc:
+        _publish_global_status(t('Blind A/B test'), t('Generation failed: {0}', type(exc).__name__), "error", str(exc))
+        raise _abx_error(exc) from exc
+    _publish_global_status(t('Blind A/B test'), status, "success")
+    yield status, abx_refresh_sessions(session["id"])
+
+
+def abx_create_and_generate(name, adapter_a, adapter_b, voice, language, texts, repetitions, *settings,
+                            progress=gr.Progress()):
+    a, b = _abx_adapter_side(adapter_a), _abx_adapter_side(adapter_b)
+    if not voice or voice == NONE_SENTINEL:
+        raise gr.Error(t('Choose a saved reference voice.'))
+    try:
+        session = ABX.create_session(
+            ABX_ROOT, name=name, a=a, b=b, reference_path=voice, transcript=load_voice_transcript(voice),
+            language=language, texts=texts, repetitions=repetitions,
+            settings=dict(zip(ABX_SETTING_KEYS, settings)),
+        )
+    except Exception as exc:
+        raise _abx_error(exc) from exc
+    yield from _abx_run_generation(session, progress)
+
+
+def abx_resume_generation(session_id, progress=gr.Progress()):
+    try:
+        session = ABX.load_session(ABX_ROOT, session_id)
+    except Exception as exc:
+        raise _abx_error(exc) from exc
+    yield from _abx_run_generation(session, progress)
+
+
+def abx_stop_generation():
+    ABX_STOP.set()
+    return t('Stop requested. Generation stops after the current clip finishes.')
+
+
+def _abx_load(session_id):
+    if not session_id:
+        return None
+    try:
+        return ABX.load_session(ABX_ROOT, session_id)
+    except ABX.AbxError:
+        return None
+
+
+def _abx_results(session):
+    summary = ABX.summarize(session)
+    a, b = session["a"]["label"], session["b"]["label"]
+    verdicts = {
+        "b_better": t('B ({0}) is preferred, and the difference is significant.', b),
+        "a_better": t('A ({0}) is preferred, and the difference is significant.', a),
+        "no_difference": t('No significant difference was found.'),
+    }
+    decided = summary["wins_a"] + summary["wins_b"]
+    lines = [
+        f"### {verdicts[summary['verdict']]}",
+        t('**A** = {0}  ·  **B** = {1}', a, b),
+        t('A better: **{0}** · B better: **{1}** · About the same: **{2}** · Unrated: **{3}**',
+          summary["wins_a"], summary["wins_b"], summary["ties"], summary["total"] - summary["rated"]),
+        t('Mean preference (−2 favours A, +2 favours B): **{0:+.2f} ± {1:.2f}**', summary["mean_b"], summary["stderr"]),
+        t('Sign test: p = {0:.4f} (ties excluded, n = {1}); p < 0.05 counts as significant.', summary["p_value"], decided),
+    ]
+    if decided < 6:
+        lines.append(t('Fewer than 6 non-tied trials can never reach significance. Rate more trials for a firm conclusion.'))
+    rows = []
+    for row in summary["rows"]:
+        if row["score"] is None:
+            choice, lean = t('Unrated'), ""
+        else:
+            choice = t(ABX_SCORE_LABELS[int(row["score"])])
+            pref = row["preference_b"]
+            lean = t('About the same') if pref == 0 else f"{'B' if pref > 0 else 'A'} +{abs(pref)}"
+        text = row["text"] if len(row["text"]) <= 40 else row["text"][:39] + "…"
+        rows.append([row["index"] + 1, text, row["rep"] + 1, row["sample_1"], choice, lean])
+    return "\n\n".join(lines), rows
+
+
+def abx_render(session_id, index=0):
+    """Render the rating and result panels for one session."""
+    session = _abx_load(session_id)
+    hidden = gr.update(visible=False)
+    if session is None:
+        info = t('Create a blind test above, or select a saved one.') if not session_id else t('Blind test not found: {0}', session_id)
+        return (info, hidden, hidden, "", "", None, None, None, gr.update(value=None), hidden, hidden, hidden, "", [], 0)
+    pending = len(ABX.pending_clips(session))
+    total_trials = ABX.trial_count(session)
+    rated = ABX.rated_count(session)
+    if pending:
+        info = t('{0} of {1} clips still need to be generated. Rating opens when generation is complete.', pending, len(session["clips"]))
+        return (info, gr.update(visible=True), hidden, "", "", None, None, None, gr.update(value=None), hidden, hidden, hidden, "", [], 0)
+    index = max(0, min(int(index or 0), total_trials - 1))
+    view = ABX.trial_view(session, index)
+    revealed = bool(session.get("revealed"))
+    info = (t('Results revealed. Ratings are locked.') if revealed
+            else t('Rated {0} of {1} trials. You can go back and change ratings until you reveal the results.', rated, total_trials))
+    header = t('#### Trial {0} / {1}', index + 1, total_trials)
+    score = None if view["score"] is None else str(view["score"])
+    unrated = total_trials - rated
+    reveal_label = t('🔓 Reveal Results') if not unrated else t('🔓 Reveal Results ({0} unrated)', unrated)
+    if revealed:
+        result_md, result_rows = _abx_results(session)
+    else:
+        result_md, result_rows = "", []
+    return (
+        info, hidden, gr.update(visible=True), header, view["text"], view["reference"],
+        view["sample_1"], view["sample_2"],
+        gr.update(value=score, interactive=not revealed),
+        gr.update(visible=not revealed, value=reveal_label), hidden,
+        gr.update(visible=revealed), result_md, result_rows, index,
+    )
+
+
+def abx_step(session_id, index, delta):
+    session = _abx_load(session_id)
+    if session is None or not ABX.generation_complete(session):
+        return abx_render(session_id, index)
+    return abx_render(session_id, (int(index or 0) + delta) % ABX.trial_count(session))
+
+
+def abx_next_unrated(session_id, index):
+    session = _abx_load(session_id)
+    if session is None:
+        return abx_render(session_id, index)
+    target = ABX.next_unrated(session, int(index or 0))
+    if target is None:
+        gr.Info(t('All trials are rated. Reveal the results when you are ready.'))
+        target = index
+    return abx_render(session_id, target)
+
+
+def abx_rate(session_id, index, score):
+    session = _abx_load(session_id)
+    if session is None:
+        raise gr.Error(t('Blind test not found: {0}', session_id))
+    try:
+        ABX.rate(session, index, None if score in (None, "") else int(score))
+    except Exception as exc:
+        raise _abx_error(exc) from exc
+    total_trials = ABX.trial_count(session)
+    rated = ABX.rated_count(session)
+    unrated = total_trials - rated
+    info = t('Rated {0} of {1} trials. You can go back and change ratings until you reveal the results.', rated, total_trials)
+    reveal_label = t('🔓 Reveal Results') if not unrated else t('🔓 Reveal Results ({0} unrated)', unrated)
+    return info, gr.update(value=reveal_label)
+
+
+def abx_reveal(session_id, index):
+    session = _abx_load(session_id)
+    if session is None:
+        raise gr.Error(t('Blind test not found: {0}', session_id))
+    try:
+        ABX.reveal(session)
+    except Exception as exc:
+        raise _abx_error(exc) from exc
+    return abx_render(session_id, index)
+
+
 def proofreading_context(folder, project, language, ui_language):
     return json.dumps(dict(type="proofread-context", directory=str(folder or ""),
                            project=project or "", language=LANGUAGES.get(language, language),
@@ -2480,6 +2762,62 @@ with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hi
             training_message = gr.State("")
             training_timer = gr.Timer(1.0)
 
+        with gr.Tab(t('🎧 Blind A/B Test'), id="tab_abx"):
+            gr.Markdown(t('Compare two adapters without knowing which one you are hearing. All clips are generated first and saved; rating only plays the saved files, so you can switch between samples instantly.'), elem_classes=["tab-subtitle"])
+            with gr.Accordion(t('📖 Quick Guide'), open=False):
+                gr.Markdown(t("1. Choose adapters **A** and **B**. Either side may be **None** (the base model), so you can also check a LoRA against the original model or two checkpoints of the same run.\n2. Choose a saved reference voice, enter test sentences (one per line) and the number of generations per sentence, then generate. Clips for A are generated first, then B, so the model is loaded at most twice. Generation can be stopped and continued later.\n3. Each trial plays the same sentence from both sides as **Sample 1** and **Sample 2** in random order. Pick one of the five ratings; you can go back and change ratings until you reveal the results.\n4. **Reveal Results** shows which sample was which, the win counts, the mean preference and a sign test. Ratings are locked afterwards.\n\nTips: keep sentences short (about 5–15 seconds) and rate at least 10–20 trials. At least 6 non-tied trials are needed before any result can be significant. A and B share the same random seed for each sentence and generation; this reduces random differences but cannot remove them, because different weights take different sampling paths. Avoid synthesizing on other pages while blind test clips are being generated. Tests are saved in `outputs/abx/`."))
+
+            gr.Markdown(t('#### ➕ New Blind Test'))
+            with gr.Row():
+                abx_name = gr.Textbox(label=t('Test Name (optional)'), scale=2)
+                abx_adapter_a = gr.Dropdown(choices=_adapter_choices(), value=NONE_SENTINEL, label=t('Adapter A'), scale=3)
+                abx_adapter_b = gr.Dropdown(choices=_adapter_choices(), value=NONE_SENTINEL, label=t('Adapter B'), scale=3)
+                abx_refresh_adapters_btn = gr.Button(t('🔄'), size="sm", scale=0, min_width=48)
+            with gr.Row():
+                abx_voice = gr.Dropdown(choices=voice_choices(include_none=True), value=NONE_SENTINEL, label=t('Reference Voice'), scale=3,
+                                        info=t('Saved voice library entry. Its transcript, if any, is used for both sides.'))
+                abx_refresh_voice_btn = gr.Button(t('🔄'), size="sm", scale=0, min_width=48)
+                abx_language = gr.Dropdown(localized_choices(list(LANGUAGES)), value="Chinese", label=t('Language'), scale=2)
+                abx_repetitions = gr.Slider(1, ABX.MAX_REPETITIONS, value=2, step=1, label=t('Generations per Sentence'), scale=2)
+            abx_texts = gr.Textbox(label=t('Test Sentences (one per line)'), lines=5)
+            abx_plan = gr.Markdown(abx_plan_text("", 2))
+            with gr.Row():
+                abx_generate_btn = gr.Button(t('⚡ Generate Test Clips'), variant="primary", size="lg", scale=4, elem_classes="button-primary")
+                abx_stop_btn = gr.Button(t('⏹️ Stop'), variant="stop", scale=1, min_width=90, elem_classes="button-stop")
+            abx_generation_status = gr.Textbox(label=t('Generation Status'), interactive=False, lines=1)
+
+            gr.Markdown(t('#### 🎧 Run a Blind Test'))
+            with gr.Row():
+                abx_session_select = gr.Dropdown(choices=abx_session_choices(), value=None, label=t('Saved Blind Tests'), scale=6)
+                abx_refresh_sessions_btn = gr.Button(t('🔄 Refresh'), scale=1)
+                abx_resume_btn = gr.Button(t('▶ Continue Generating'), variant="secondary", scale=1, visible=False)
+            abx_info = gr.Markdown(t('Create a blind test above, or select a saved one.'))
+            abx_index = gr.State(0)
+            with gr.Group(visible=False) as abx_rating_group:
+                abx_trial_header = gr.Markdown("")
+                with gr.Row():
+                    abx_trial_text = gr.Textbox(label=t('Target Text'), interactive=False, lines=2, scale=3)
+                    abx_trial_reference = gr.Audio(label=t('Reference Voice'), type="filepath", interactive=False, scale=2, elem_classes="audio-safe-space")
+                with gr.Row():
+                    abx_sample_1 = gr.Audio(label=t('Sample 1'), type="filepath", interactive=False, elem_classes="audio-safe-space")
+                    abx_sample_2 = gr.Audio(label=t('Sample 2'), type="filepath", interactive=False, elem_classes="audio-safe-space")
+                abx_score = gr.Radio(abx_score_choices(), value=None, label=t('Which sample is better?'))
+                with gr.Row():
+                    abx_prev_btn = gr.Button(t('← Previous'), scale=1)
+                    abx_next_btn = gr.Button(t('Next →'), scale=1)
+                    abx_next_unrated_btn = gr.Button(t('Next Unrated'), scale=1)
+                    abx_reveal_btn = gr.Button(t('🔓 Reveal Results'), variant="primary", scale=1)
+                with gr.Row(visible=False) as abx_confirm_row:
+                    gr.Markdown(t('Revealing the results locks all ratings. Continue?'))
+                    abx_confirm_btn = gr.Button(t('Yes, reveal'), variant="stop", scale=0, min_width=140)
+                    abx_cancel_btn = gr.Button(t('Cancel'), scale=0, min_width=100)
+            with gr.Group(visible=False) as abx_results_group:
+                abx_results_md = gr.Markdown("")
+                abx_results_table = gr.Dataframe(
+                    headers=[t('Trial'), t('Text'), t('Generation'), t('Sample 1 was'), t('Your rating'), t('Preference')],
+                    interactive=False, wrap=True,
+                )
+
         with gr.Tab(t('📦 Export GPT Checkpoint'), id="tab_export_checkpoint"):
             gr.Markdown(t('Merge a trained LoRA into a complete FP32 GPT checkpoint on CPU. Download it in this browser or save it to a path on the GUI server.'), elem_classes=["tab-subtitle"])
             with gr.Row():
@@ -2871,6 +3209,55 @@ with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hi
         export_outputs, queue=False)
     export_cancel_btn.click(cancel_checkpoint_export, None, export_outputs, queue=False)
     export_timer.tick(checkpoint_export_snapshot, None, export_outputs, queue=False, show_progress="hidden")
+
+    abx_render_outputs = [
+        abx_info, abx_resume_btn, abx_rating_group, abx_trial_header, abx_trial_text, abx_trial_reference,
+        abx_sample_1, abx_sample_2, abx_score, abx_reveal_btn, abx_confirm_row,
+        abx_results_group, abx_results_md, abx_results_table, abx_index,
+    ]
+    abx_refresh_adapters_btn.click(
+        lambda a, b: (refresh_adapters(a), refresh_adapters(b)), [abx_adapter_a, abx_adapter_b],
+        [abx_adapter_a, abx_adapter_b], queue=False, show_progress="hidden",
+    )
+    abx_refresh_voice_btn.click(lambda value: refresh_voice_dropdown(value, include_none=True), abx_voice, abx_voice,
+                                queue=False, show_progress="hidden")
+    for abx_plan_input in (abx_texts, abx_repetitions):
+        abx_plan_input.change(abx_plan_text, [abx_texts, abx_repetitions], abx_plan, queue=False, show_progress="hidden")
+    abx_settings_inputs = [
+        duration_factor, interval_silence, text_normalization, max_text_tokens, do_sample,
+        top_p, top_k, temperature, num_beams, repetition_penalty, length_penalty,
+        max_mel_tokens, use_bf16, use_gpt_latent, use_torch_compile, use_flash_accel,
+    ]
+    abx_generate_btn.click(
+        abx_create_and_generate,
+        [abx_name, abx_adapter_a, abx_adapter_b, abx_voice, abx_language, abx_texts, abx_repetitions, *abx_settings_inputs],
+        [abx_generation_status, abx_session_select],
+    ).then(abx_render, abx_session_select, abx_render_outputs, queue=False, show_progress="hidden")
+    abx_resume_btn.click(
+        abx_resume_generation, abx_session_select, [abx_generation_status, abx_session_select],
+    ).then(abx_render, abx_session_select, abx_render_outputs, queue=False, show_progress="hidden")
+    # Not queued: generation holds the single queue slot, and stopping between clips keeps finished clips intact.
+    abx_stop_btn.click(abx_stop_generation, None, abx_generation_status, queue=False, show_progress="hidden")
+    abx_refresh_sessions_btn.click(abx_refresh_sessions, abx_session_select, abx_session_select,
+                                   queue=False, show_progress="hidden").then(
+        abx_render, abx_session_select, abx_render_outputs, queue=False, show_progress="hidden")
+    abx_session_select.change(abx_render, abx_session_select, abx_render_outputs, queue=False, show_progress="hidden")
+    abx_prev_btn.click(lambda sid, idx: abx_step(sid, idx, -1), [abx_session_select, abx_index], abx_render_outputs,
+                       queue=False, show_progress="hidden")
+    abx_next_btn.click(lambda sid, idx: abx_step(sid, idx, 1), [abx_session_select, abx_index], abx_render_outputs,
+                       queue=False, show_progress="hidden")
+    abx_next_unrated_btn.click(abx_next_unrated, [abx_session_select, abx_index], abx_render_outputs,
+                               queue=False, show_progress="hidden")
+    # .input fires only for user choices, so rendering a trial never writes a rating.
+    abx_score.input(abx_rate, [abx_session_select, abx_index, abx_score], [abx_info, abx_reveal_btn],
+                    queue=False, show_progress="hidden")
+    abx_reveal_btn.click(lambda: gr.update(visible=True), None, abx_confirm_row, queue=False, show_progress="hidden")
+    abx_cancel_btn.click(lambda: gr.update(visible=False), None, abx_confirm_row, queue=False, show_progress="hidden")
+    abx_confirm_btn.click(abx_reveal, [abx_session_select, abx_index], abx_render_outputs, queue=False, show_progress="hidden").then(
+        abx_refresh_sessions, abx_session_select, abx_session_select, queue=False, show_progress="hidden")
+    # Programmatic dropdown updates from demo.load do not fire .change, so render explicitly.
+    demo.load(abx_refresh_sessions, abx_session_select, abx_session_select, queue=False, show_progress="hidden").then(
+        abx_render, abx_session_select, abx_render_outputs, queue=False, show_progress="hidden")
 
 
 if __name__ == "__main__":

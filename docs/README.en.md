@@ -12,6 +12,7 @@ A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). 
 - **Inference**: single-text and multi-speaker dialogue synthesis, automatic long-text chunking, and emotion control from reference audio, an emotion vector, or a text description.
 - **Dataset Preparation**: fill in missing transcripts with SenseVoice on the CPU, then proofread each clip by ear.
 - **LoRA Training** (experimental): fine-tune the GPT module on your corpus, with checkpoints, resume, evaluation audio, and TensorBoard.
+- **Blind A/B Test**: compare two adapters (or the base model) by blind listening, with preference statistics and a significance test, to tell whether a new LoRA is a real improvement or a regression.
 - **Export GPT Checkpoint**: merge a LoRA into a full `.pth` that the ComfyUI IndexTTS-2.5 nodes can load.
 - **Updater**: Git-free ZIP updates that keep your data and support rollback.
 
@@ -52,7 +53,7 @@ If a new version changes dependencies, the updater stops before replacing any fi
 | Document | Topics |
 | --- | --- |
 | [安装与配置](installation.md) | Installation, launch, ASR import, listen address and proxy, accelerators, data folders |
-| [使用指南](user-guide.md) | Voice library, inference, dataset preparation, LoRA training, export |
+| [使用指南](user-guide.md) | Voice library, inference, dataset preparation, LoRA training, blind A/B test, export |
 | [更新与常见问题](update-and-troubleshooting.md) | ZIP updates, rollback, troubleshooting |
 | [开发与维护](development.md) | Code layout, tests, release manifest, UI translation |
 

@@ -97,7 +97,7 @@ rem set "HTTPS_PROXY=http://127.0.0.1:7890"
 | `voices/`、`emotion_descriptions/` | 声音库、情绪描述库 |
 | `training/projects/`、`training/datasets/` | 训练项目设置、训练清单 |
 | `training/outputs/` | LoRA 检查点和评估音频 |
-| `outputs/` | 合成的音频、导出的检查点 |
+| `outputs/` | 合成的音频、导出的检查点；盲测对比保存在 `outputs/abx/` |
 | `.venv/`、`.runtime/` | 运行环境、缓存、设置、日志 |
 | 语料目录里的 `.proofread/` | 校对进度和文本备份 |
 | `local-settings.bat` | 本机的监听地址和代理设置 |
