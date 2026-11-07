@@ -76,7 +76,8 @@
 | [安装与配置](docs/installation.md) | 安装、启动、ASR 导入、监听地址与代理、加速组件、数据目录 |
 | [使用指南](docs/user-guide.md) | 各页面的用法：声音库、语音合成、数据准备、LoRA 训练、盲测对比、导出 |
 | [更新与常见问题](docs/update-and-troubleshooting.md) | ZIP 更新、回滚、常见报错的处理 |
-| [开发与维护](docs/development.md) | 代码结构、测试、发布清单、界面翻译 |
+| [开发与维护](docs/development.md) | 代码结构、测试、发布清单、版本号、界面翻译 |
+| [更新日志](docs/CHANGELOG.md) | 每个版本的变更，以及哪些版本需要重新安装 |
 
 ## 致谢与许可
 

@@ -55,7 +55,8 @@ If a new version changes dependencies, the updater stops before replacing any fi
 | [安装与配置](installation.md) | Installation, launch, ASR import, listen address and proxy, accelerators, data folders |
 | [使用指南](user-guide.md) | Voice library, inference, dataset preparation, LoRA training, blind A/B test, export |
 | [更新与常见问题](update-and-troubleshooting.md) | ZIP updates, rollback, troubleshooting |
-| [开发与维护](development.md) | Code layout, tests, release manifest, UI translation |
+| [开发与维护](development.md) | Code layout, tests, release manifest, versioning, UI translation |
+| [更新日志](CHANGELOG.md) | Changes in each version, including which versions need a reinstall |
 
 ## Credits and license
 

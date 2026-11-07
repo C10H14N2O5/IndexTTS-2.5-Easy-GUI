@@ -39,6 +39,7 @@ RUNTIME_DIR = ROOT / ".runtime"
 SETTINGS_FILE = RUNTIME_DIR / "gui_settings.json"
 
 from tools.easy_gui_i18n import GuiI18n, UI_LANGUAGES, update_gui_settings
+from tools.version import __version__ as APP_VERSION
 
 _UI_I18N = GuiI18n(SETTINGS_FILE)
 t = _UI_I18N.t
@@ -2294,6 +2295,7 @@ PROOFREAD_CONTEXT_JS = r"""raw => {
 _install_console_mirror()
 
 if __name__ == "__main__":
+    print(f"[startup] {APP_TITLE} v{APP_VERSION}", flush=True)
     _ensure_model_before_ui()
 
 
@@ -2301,7 +2303,7 @@ _INITIAL_CAPS = acceleration_capabilities()
 _INITIAL_RUNTIME = normalize_runtime_settings(_load_runtime_settings(), _INITIAL_CAPS)
 
 
-with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hidden-bridge {display:none!important}") as demo:
+with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hidden-bridge {display:none!important}") as demo:
     with gr.Row(elem_classes="title-section"):
         with gr.Column(scale=6):
             ui_language = gr.Dropdown(
@@ -2311,7 +2313,7 @@ with gr.Blocks(title=t(APP_TITLE), js=PROOFREAD_BRIDGE, css=CSS+"\n.proofread-hi
             )
             ui_language_notice = gr.Markdown("")
             ui_language.change(save_ui_language, ui_language, ui_language_notice, queue=False, show_progress="hidden")
-            gr.Markdown(t('# 🗣️ IndexTTS 2.5 Easy GUI'))
+            gr.Markdown(t('# 🗣️ IndexTTS 2.5 Easy GUI') + f' <sup>v{APP_VERSION}</sup>')
         with gr.Column(scale=1, min_width=110):
             gr.Markdown(t('[📖 IndexTTS](https://github.com/index-tts/index-tts)'))
         with gr.Column(scale=3, min_width=520):

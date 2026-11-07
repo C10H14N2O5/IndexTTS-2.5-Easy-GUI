@@ -31,6 +31,7 @@ $py = '.\.venv\Scripts\python.exe'
 & $py -B -m unittest discover -s tests -p test_merge_lora_to_pth.py   # LoRA 合并
 & $py -B -m unittest discover -s tests -p test_text_chunking.py       # 长文本分段
 & $py -B -m unittest discover -s tests -p test_abx.py                 # 盲测对比
+& $py -B -m unittest discover -s tests -p test_version.py             # 版本号与更新日志一致
 node tests/test_proofread_frontend.cjs                                # 校对前端状态，需要 Node.js
 ```
 
@@ -54,7 +55,27 @@ python tools\build_update_manifest.py --files-from "$env:TEMP\files.txt"
 
 - `files` 中不会包含模型权重、`.runtime/`、`.venv/` 等受保护的路径；放在根目录的文件只有位于 `tools/update_core.py` 的 `ALLOWED_ROOT` 白名单中才会被收录，其余会被**直接跳过**。新的文档请放在 `docs/` 下。
 - `environment` 列出的是环境相关文件：`pyproject.toml`、`uv.lock`、`.python-version`、`1- install.bat`、`tools/install_runtime.bat`、`tools/install.ps1`、`tools/verify_*.py`、`tools/nemo_tn*.py`。**这些文件只要有任何改动，所有用户的 ZIP 更新都会被拦住**，用户需要重新下载并运行安装程序。没有必要时不要碰它们，即使只是改一行提示文字（例如 `tools/install_runtime.bat` 里过时的 `run.bat` 字样，也因此暂时保留）。
-- 修改 `ALLOWED_ROOT` 等校验规则时，要考虑到用户机器上运行的是**旧版**更新器。
+- 修改 `ALLOWED_ROOT` 等校验规则时，要考虑到用户机器上运行的是**旧版**更新器。因此更新日志放在 `docs/CHANGELOG.md`、版本号放在 `tools/version.py`，而不是根目录：根目录新增文件会让旧版更新器拒绝整个清单。
+
+## 版本与更新日志
+
+版本号是 `tools/version.py` 中的 `__version__`，遵循语义化版本：只有修复升修订号（1.0.1），新增功能升次版本号（1.1.0），不兼容的改动升主版本号（2.0.0）。`pyproject.toml` 里的 `version = "2.5.0"` 是上游 IndexTTS 包的版本，而且属于环境文件，不要改。
+
+平时每个面向用户的改动，都在 [`docs/CHANGELOG.md`](CHANGELOG.md) 的“未发布”一节下按“新增 / 变更 / 修复 / 移除”记一条。改动了环境文件的，标注 **⚠️ 需要重新安装**。
+
+发布新版本时：
+
+1. 把“未发布”下的内容移到新的 `## [x.y.z] - YYYY-MM-DD` 一节，“未发布”保留为空；
+2. 修改 `tools/version.py`；`test_version.py` 会检查两者一致；
+3. 和其他改动一样提交（需要时重新生成清单），然后打标签并推送到两个远程：
+
+```powershell
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin main vX.Y.Z
+git push github main vX.Y.Z
+```
+
+推送 GitHub 的 `main` 才是真正的发布；标签只用来标记版本，更新器不读取它。
 
 ## 界面翻译
 

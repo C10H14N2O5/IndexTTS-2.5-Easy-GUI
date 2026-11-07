@@ -15,6 +15,7 @@
     "accelerator_wheels/.gitkeep",
     "accelerator_wheels/README.txt",
     "assets/inference_training_done.wav",
+    "assets/screenshot.png",
     "backends/__init__.py",
     "backends/trt/.gitignore",
     "backends/trt/README.md",
@@ -70,6 +71,7 @@
     "cli_tests/test_cli_v2_concat.py",
     "cli_tests/test_cli_v2_config.py",
     "cli_tests/test_cli_v2_download.py",
+    "docs/CHANGELOG.md",
     "docs/README.en.md",
     "docs/development.md",
     "docs/installation.md",
@@ -341,6 +343,7 @@
     "tests/test_updater_transport.py",
     "tests/test_v1.py",
     "tests/test_v2.py",
+    "tests/test_version.py",
     "tools/build_update_manifest.py",
     "tools/clean_tensorboard_asr_tags.py",
     "tools/easy_gui_i18n.py",
@@ -376,6 +379,7 @@
     "tools/verify_nemo_tn.py",
     "tools/verify_numpy.py",
     "tools/verify_text_normalization.py",
+    "tools/version.py",
     "uv.lock"
   ],
   "environment": [
