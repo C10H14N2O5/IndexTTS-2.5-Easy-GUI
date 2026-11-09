@@ -84,13 +84,14 @@ def validation_settings(project):
 def normalize_validation_interval(value):
     if value is None:
         return None
+    message = 'Validation interval must be a non-negative whole number of steps.'
     try:
         steps = int(value)
-    except (TypeError, ValueError, OverflowError):
-        steps = 0
-    if isinstance(value, bool) or steps < 1 or steps != value:
-        raise ValueError('Validation interval must be a positive whole number of steps.')
-    return steps
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if isinstance(value, bool) or steps < 0 or steps != value:
+        raise ValueError(message)
+    return steps or None
 
 
 @project_transaction

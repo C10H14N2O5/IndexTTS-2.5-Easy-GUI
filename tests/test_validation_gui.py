@@ -47,7 +47,7 @@ def gui(tmp_path):
 def test_first_validation_folder_binding_keeps_training_settings(gui):
     suggested = str(gui.VALIDATION_DIR / "demo")
     project = load_project("demo", gui.TRAINING_DIR)
-    assert gui.validation_project_values("demo", project) == (suggested, False, None)
+    assert gui.validation_project_values("demo", project) == (suggested, False, 0)
     context = gui.proofreading_context(project["source_folder"], "demo", "English", "en_US", "validation", suggested)
     assert json.loads(context) == {
         "type": "proofread-context", "directory": "", "role": "validation", "project": "demo",
@@ -56,7 +56,7 @@ def test_first_validation_folder_binding_keeps_training_settings(gui):
     gui.save_dataset_project("demo", "", "ignored", "ignored", "English", "validation", suggested)
     saved = load_project("demo", gui.TRAINING_DIR)
     assert Path(suggested).is_dir()
-    assert gui.validation_project_values("demo", saved) == (suggested, True, None)
+    assert gui.validation_project_values("demo", saved) == (suggested, True, 0)
     assert {key: saved[key] for key in project} == project
 
 
@@ -76,16 +76,22 @@ def test_rejected_switch_restores_role_and_clears_the_pending_context(gui):
     assert updates[-1] == ""
 
 
-def test_training_project_save_persists_switch_and_interval_with_folder(gui):
+@pytest.mark.parametrize(("interval", "saved_interval", "displayed_interval"), [
+    (None, None, 0), (0, None, 0), (7, 7, 7),
+])
+def test_training_project_save_persists_switch_and_interval_with_folder(
+    gui, interval, saved_interval, displayed_interval,
+):
     suggested = str(gui.VALIDATION_DIR / "demo")
     gui.save_dataset_project("demo", "", "", "", "Chinese", "validation", suggested)
     gui.save_training_project(
         "demo", "", "", "Chinese", "adapter", "24 GB", "Steps", 10, 1, 3, 1,
         4, 8, 0.0, 0.001, 1, 1, 1.0, 0.0, False, 0.0, None, False, "", "", "",
-        "Chinese", "", "", False, 7,
+        "Chinese", "", "", False, interval,
     )
     saved = load_project("demo", gui.TRAINING_DIR)
-    assert gui.validation_project_values("demo", saved) == (suggested, False, 7)
+    assert saved["validation"]["interval_steps"] == saved_interval
+    assert gui.validation_project_values("demo", saved) == (suggested, False, displayed_interval)
 
 
 def test_start_allows_no_validation_folder_only_when_switch_is_off(gui, monkeypatch):

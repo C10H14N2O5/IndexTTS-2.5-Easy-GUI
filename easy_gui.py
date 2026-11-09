@@ -2287,7 +2287,8 @@ def validation_project_values(project, meta):
     from indextts_training.dataset import validation_settings
 
     settings = validation_settings(meta)
-    return validation_folder_value(project, settings), settings["enabled"], settings["interval_steps"]
+    interval = settings["interval_steps"]
+    return validation_folder_value(project, settings), settings["enabled"], 0 if interval is None else interval
 
 
 def reload_validation_after_save(project, role):
@@ -2821,8 +2822,8 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             with gr.Accordion(t('Validation Loss'), open=False):
                 validation_enabled = gr.Checkbox(False, label=t('Enable Validation Loss'))
                 validation_interval_steps = gr.Number(
-                    value=None, label=t('Validation Interval (Optimizer Steps)'),
-                    info=t('Leave blank to validate at checkpoints. Validation also runs at the final step.'),
+                    value=0, label=t('Validation Interval (Optimizer Steps)'),
+                    info=t('Enter 0 or leave blank to validate at checkpoints. Validation also runs at the final step.'),
                 )
 
             with gr.Accordion(t('🎧 Eval Audio + TensorBoard'), open=True):

@@ -164,9 +164,11 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual((validation['source_folder'], validation['manifest'], validation['interval_steps']),
                          (str(audio.parent.resolve()), str(validation_manifest), 8))
         self.assertIsNone(ds.validate_validation_manifest('voice', training_manifest, self.training))
-        active = ds.validate_validation_manifest('voice', training_manifest, self.training,
-                                                 enabled=True, interval_steps=None)
-        self.assertIsNone(active['interval_steps'])
+        for interval in (None, 0, 0.0):
+            with self.subTest(interval=interval):
+                active = ds.validate_validation_manifest('voice', training_manifest, self.training,
+                                                         enabled=True, interval_steps=interval)
+                self.assertIsNone(active['interval_steps'])
         self.assertEqual(len(active['rows']), 1)
         self.assertEqual(active['fingerprint'], validation['manifest_sha256'])
         self.assertEqual(active['training_fingerprint'], hashlib.sha256(before).hexdigest())
@@ -200,8 +202,8 @@ class ManifestTests(unittest.TestCase):
 
     def test_empty_validation_and_invalid_intervals_are_rejected(self):
         training_manifest, _ = self.prepare_validation()
-        for invalid in (False, 0, -1, 2.5, float('inf')):
-            with self.subTest(interval=invalid), self.assertRaisesRegex(ValueError, 'positive whole number'):
+        for invalid in (False, -1, 0.5, 2.5, float('inf')):
+            with self.subTest(interval=invalid), self.assertRaisesRegex(ValueError, 'non-negative whole number'):
                 ds.validate_validation_manifest('voice', training_manifest, self.training, interval_steps=invalid)
         self.assertEqual(ds.normalize_validation_interval(4.0), 4)
         validation = ds.load_project('voice', self.training)['validation']
