@@ -32,5 +32,17 @@
   "Non-finite gradient norm detected at step {0}: {1}",
   "Training step {0}/{1} | epoch {2} | lr {3:.2e}",
   "Saved checkpoint: {0} | Eval: {1}",
-  "Saved checkpoint: {0}"
+  "Saved checkpoint: {0}",
+  "Validation audio folder does not exist: {0}",
+  "Unable to verify validation manifest: {0}",
+  "Unable to read training manifest: {0}",
+  "Unable to read validation manifest: {0}",
+  "Unable to read audio listed in the training manifest: {0}",
+  "Unable to read audio listed in the validation manifest: {0}",
+  "Training and validation contain the same audio: {0} and {1}",
+  "Running validation at step {0}…",
+  "Validation loss at step {0}: {1}",
+  "Validation failed at step {0} for {1}: {2}",
+  "Validation failed at step {0}; checkpoint save also failed: {1}",
+  "Non-finite validation loss: {0}"
 ]

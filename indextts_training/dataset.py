@@ -4,6 +4,7 @@ from pathlib import Path
 
 AUDIO_EXTS={'.wav','.flac','.mp3','.m4a','.ogg','.aac'}
 DATASET_LOCK = threading.RLock()
+_UNSET = object()
 
 
 def project_transaction(function):
@@ -73,6 +74,76 @@ def _project_file(name, root):
         raise ValueError('Invalid project path.')
     return result
 
+
+def validation_settings(project):
+    saved = project.get('validation')
+    defaults = dict(source_folder='', manifest='', stats={}, enabled=False, interval_steps=None)
+    return {**defaults, **saved} if isinstance(saved, dict) else defaults
+
+
+def normalize_validation_interval(value):
+    if value is None:
+        return None
+    try:
+        steps = int(value)
+    except (TypeError, ValueError, OverflowError):
+        steps = 0
+    if isinstance(value, bool) or steps < 1 or steps != value:
+        raise ValueError('Validation interval must be a positive whole number of steps.')
+    return steps
+
+
+@project_transaction
+def configure_validation(project, *, source_folder=_UNSET, enabled=_UNSET,
+                         interval_steps=_UNSET, root='training'):
+    """Save validation options without rewriting either manifest."""
+    meta = load_project(project, root)
+    if not meta:
+        raise ValueError('Select and save a project first.')
+    previous = validation_settings(meta)
+    settings = dict(previous)
+    if source_folder is not _UNSET:
+        folder = str(source_folder or '').strip()
+        settings['source_folder'] = str(Path(folder).expanduser().resolve()) if folder else ''
+        if not previous['source_folder'] or not folder:
+            settings['enabled'] = bool(folder)
+    if enabled is not _UNSET:
+        settings['enabled'] = bool(enabled)
+    if interval_steps is not _UNSET:
+        settings['interval_steps'] = normalize_validation_interval(interval_steps)
+    if settings != previous:
+        meta['validation'] = settings
+        _atomic_write(_project_file(project, root), json.dumps(meta, indent=2, ensure_ascii=False).encode('utf-8'))
+    return meta
+
+
+def _dataset_settings(meta, role):
+    if role == 'training':
+        return meta
+    if role == 'validation':
+        return validation_settings(meta)
+    raise ValueError('Unknown dataset role.')
+
+
+def _manifest_path(root, project, role):
+    datasets = Path(root) / 'datasets'
+    filename = 'validation.jsonl' if role == 'validation' else 'manifest.jsonl'
+    path = datasets / project / filename
+    resolved = path.resolve()
+    if not resolved.is_relative_to(datasets.resolve()):
+        raise ValueError('Invalid manifest destination.')
+    if role == 'validation' and resolved != datasets.resolve() / project / filename:
+        raise ValueError('Invalid manifest destination.')
+    return path
+
+
+def _decode_manifest(raw):
+    rows = [json.loads(line) for line in raw.decode('utf-8-sig').splitlines() if line.strip()]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError('Manifest rows must be JSON objects.')
+    return rows
+
+
 def _duration(path: Path) -> float:
     try:
         import soundfile as sf
@@ -122,7 +193,8 @@ def _require_idle_training():
 
 
 def prepare_dataset(source_folder, project_name, language='EN', min_seconds=None, max_seconds=None,
-                    transcribe_missing=False, whisper_model=None, whisper_language=None, root='training'):
+                    transcribe_missing=False, whisper_model=None, whisper_language=None, root='training',
+                    *, role='training'):
     """Build only from saved sidecars. Legacy ASR arguments remain readable, not executable."""
     if transcribe_missing:
         raise ValueError('Use Recognize missing text in the proofreading workbench before updating the manifest.')
@@ -134,9 +206,15 @@ def prepare_dataset(source_folder, project_name, language='EN', min_seconds=None
         safe=''.join(c if c.isalnum() or c in '-_' else '_' for c in project_name.strip()).strip('_') or 'dataset'
         root=Path(root)
         project_file=_project_file(safe, root)
-        manifest=root/'datasets'/safe/'manifest.jsonl'
-        if not manifest.resolve().is_relative_to((root/'datasets').resolve()):
-            raise ValueError('Invalid manifest destination.')
+        meta=load_project(safe, root)
+        settings=_dataset_settings(meta, role)
+        if role == 'validation':
+            folder = settings['source_folder']
+            if not folder or Path(folder).resolve() != Path(source_folder).resolve():
+                raise ValueError('Save the project validation folder first.')
+            language = meta.get('language', 'EN')
+            meta['validation'] = settings
+        manifest=_manifest_path(root, safe, role)
         before=_source_signature(source_folder)
         rows,stats=scan_dataset(source_folder,min_seconds,max_seconds)
         valid=_manifest_rows(rows,language)
@@ -144,14 +222,13 @@ def prepare_dataset(source_folder, project_name, language='EN', min_seconds=None
             raise ValueError('No valid audio+transcript pairs were found after filtering.')
         if before != _source_signature(source_folder):
             raise ValueError('Source files changed while scanning. Retry updating the manifest.')
-        previous=load_project(safe, root)
-        meta=dict(previous)
         stats['prepared_manifest']=str(manifest.resolve())
-        meta.update(project_name=safe, source_folder=str(Path(source_folder).resolve()),
-                    manifest=str(manifest.resolve()), language=language, stats=stats,
-                    source_signature=before, manifest_bounds={'min':min_seconds,'max':max_seconds})
+        meta.update(project_name=safe, language=language)
+        settings.update(source_folder=str(Path(source_folder).resolve()),
+                        manifest=str(manifest.resolve()), stats=stats, source_signature=before,
+                        manifest_bounds={'min':min_seconds,'max':max_seconds})
         manifest_bytes=('\n'.join(json.dumps(r,ensure_ascii=False) for r in valid)+'\n').encode('utf-8')
-        meta['manifest_sha256']=hashlib.sha256(manifest_bytes).hexdigest()
+        settings['manifest_sha256']=hashlib.sha256(manifest_bytes).hexdigest()
         old_manifest=manifest.read_bytes() if manifest.is_file() else None
         try:
             _atomic_write(manifest,manifest_bytes)
@@ -165,48 +242,59 @@ def prepare_dataset(source_folder, project_name, language='EN', min_seconds=None
         return meta
 
 
-def dataset_manifest_status(project, root='training'):
+def dataset_manifest_status(project, root='training', *, role='training'):
     """Read-only freshness check, including projects prepared before signatures existed."""
     if not project:
-        return dict(stale=True,managed=False,manifest='',message='Select a project to update its training manifest.',stats={})
+        return dict(stale=True,managed=False,manifest='',status='missing',
+                    message=f'Select a project to update its {role} manifest.',stats={})
     with DATASET_LOCK:
         meta=load_project(project,root)
-        manifest=str(meta.get('manifest') or '')
-        result=dict(stale=True,managed=True,manifest=manifest,stats=meta.get('stats',{}))
+        settings=_dataset_settings(meta, role)
+        manifest=str(settings.get('manifest') or '')
+        result=dict(stale=True,managed=True,manifest=manifest,stats=settings.get('stats',{}))
+        label=role.capitalize()
         if not manifest or not Path(manifest).is_file():
-            return dict(result,message='Training manifest has not been prepared.')
-        if not meta.get('source_folder'):
-            return dict(result,message='Save the project source folder first.')
+            return dict(result,status='missing',message=f'{label} manifest has not been prepared.')
+        if not settings.get('source_folder'):
+            source = 'validation folder' if role == 'validation' else 'source folder'
+            return dict(result,status='missing',message=f'Save the project {source} first.')
         try:
-            signature=_source_signature(meta['source_folder'])
+            if role == 'validation' and Path(manifest).resolve() != _manifest_path(root, project, role).resolve():
+                raise ValueError('Invalid manifest destination.')
+            signature=_source_signature(settings['source_folder'])
             raw=Path(manifest).read_bytes()
-            if meta.get('source_signature'):
-                stale=(signature != meta['source_signature'] or
-                       hashlib.sha256(raw).hexdigest() != meta.get('manifest_sha256'))
+            actual=_decode_manifest(raw)
+            if role == 'validation' and not actual:
+                return dict(result,status='invalid',message='Validation manifest is empty.')
+            if settings.get('source_signature'):
+                stale=(signature != settings['source_signature'] or
+                       hashlib.sha256(raw).hexdigest() != settings.get('manifest_sha256'))
                 # Saving a changed project language must also invalidate its previous manifest.
-                entries=[json.loads(line) for line in raw.decode('utf-8-sig').splitlines() if line.strip()]
-                stale=stale or any(r.get('language') != meta.get('language','EN') for r in entries)
+                stale=stale or any(r.get('language') != meta.get('language','EN') for r in actual)
             else:
-                bounds=meta.get('manifest_bounds',{})
-                rows,_=scan_dataset(meta['source_folder'],bounds.get('min'),bounds.get('max'))
+                bounds=settings.get('manifest_bounds',{})
+                rows,_=scan_dataset(settings['source_folder'],bounds.get('min'),bounds.get('max'))
                 expected=_manifest_rows(rows,meta.get('language','EN'))
-                actual=[json.loads(line) for line in raw.decode('utf-8-sig').splitlines() if line.strip()]
                 def canonical(items):
                     return sorted((str(Path(r['audio']).resolve()),r['text'],r.get('reference_text',r['text']),r.get('language')) for r in items)
                 stale=canonical(actual)!=canonical(expected)
-            return dict(result,stale=stale,message='Training manifest needs updating.' if stale else 'Training manifest is up to date.')
+            return dict(result,stale=stale,status='stale' if stale else 'ready',
+                        message=f'{label} manifest needs updating.' if stale else f'{label} manifest is up to date.')
         except (OSError,ValueError,KeyError,TypeError) as exc:
-            return dict(result,message=f'Unable to verify training manifest: {exc}')
+            return dict(result,status='invalid',message=f'Unable to verify {role} manifest: {exc}')
 
 
-def refresh_project_manifest(project, root='training'):
+def refresh_project_manifest(project, root='training', *, role='training'):
     with DATASET_LOCK:
         meta=load_project(project,root)
-        if not meta or not meta.get('source_folder'):
+        settings=_dataset_settings(meta, role)
+        if not settings.get('source_folder'):
+            if role == 'validation':
+                raise ValueError('Save the project validation folder first.')
             raise ValueError('Save the project with a source folder first.')
-        bounds=meta.get('manifest_bounds',{})
-        return prepare_dataset(meta['source_folder'],project,meta.get('language','EN'),
-                               bounds.get('min'),bounds.get('max'),root=root)
+        bounds=settings.get('manifest_bounds',{})
+        return prepare_dataset(settings['source_folder'],project,meta.get('language','EN'),
+                               bounds.get('min'),bounds.get('max'),root=root,role=role)
 
 
 def validate_project_manifest(project, manifest, root='training'):
@@ -219,6 +307,92 @@ def validate_project_manifest(project, manifest, root='training'):
     status=dataset_manifest_status(project,root)
     if status['stale']:
         raise ValueError(status['message']+' Update the training manifest in the proofreading workbench before starting training.')
+
+
+def _read_manifest_data(manifest, role):
+    try:
+        raw = Path(manifest).read_bytes()
+        rows = _decode_manifest(raw)
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError(f'Unable to read {role} manifest: {exc}') from exc
+    if not rows:
+        raise ValueError(f'{role.capitalize()} manifest is empty.')
+    return raw, rows
+
+
+def _manifest_audio_info(row, role):
+    try:
+        path = Path(row['audio']).resolve(strict=True)
+        if not path.is_file():
+            raise OSError('Expected a regular audio file.')
+        return path, path.stat().st_size
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f'Unable to read audio listed in the {role} manifest: {row.get("audio", "")}') from exc
+
+
+def _audio_digest(path, role):
+    try:
+        with path.open('rb') as audio:
+            return hashlib.file_digest(audio, 'sha256').digest()
+    except OSError as exc:
+        raise ValueError(f'Unable to read audio listed in the {role} manifest: {path}') from exc
+
+
+def _check_validation_overlap(training_rows, validation_rows):
+    validation_paths = {}
+    for row in validation_rows:
+        path, size = _manifest_audio_info(row, 'validation')
+        validation_paths[path] = size
+
+    # Identical files have the same size. Only hash audio in the size groups
+    # shared by the two manifests, and reuse each validation digest.
+    validation_by_size = {}
+    for path, size in validation_paths.items():
+        validation_by_size.setdefault(size, []).append(path)
+
+    validation_hashes = {}
+    for row in training_rows:
+        path, size = _manifest_audio_info(row, 'training')
+        if path in validation_paths:
+            duplicate = path
+        elif size in validation_by_size:
+            if size not in validation_hashes:
+                validation_hashes[size] = {_audio_digest(candidate, 'validation'): candidate
+                                           for candidate in validation_by_size[size]}
+            duplicate = validation_hashes[size].get(_audio_digest(path, 'training'))
+        else:
+            duplicate = None
+        if duplicate is not None:
+            raise ValueError(f'Training and validation contain the same audio: {path} and {duplicate}')
+
+
+def validate_validation_manifest(project, training_manifest, root='training', *,
+                                 enabled=_UNSET, interval_steps=_UNSET):
+    """Preflight enabled validation and snapshot its rows for the training worker."""
+    if enabled is not _UNSET and not enabled:
+        return None
+    with DATASET_LOCK:
+        settings = validation_settings(load_project(project, root))
+        if enabled is _UNSET and not settings['enabled']:
+            return None
+        if not settings['source_folder']:
+            raise ValueError('Select and save a validation source folder before starting training.')
+        interval = normalize_validation_interval(settings['interval_steps'] if interval_steps is _UNSET else interval_steps)
+        from .proofread import directory_asr_running, directory_lock
+        with directory_lock(settings['source_folder']):
+            if directory_asr_running(settings['source_folder']):
+                raise ValueError('Finish recognition in the validation folder before starting training.')
+            status = dataset_manifest_status(project, root, role='validation')
+            if status['stale']:
+                raise ValueError(status['message'])
+            raw, rows = _read_manifest_data(status['manifest'], 'validation')
+            fingerprint = hashlib.sha256(raw).hexdigest()
+            if fingerprint != settings.get('manifest_sha256'):
+                raise ValueError('Validation manifest needs updating.')
+            training_raw, training_rows = _read_manifest_data(training_manifest, 'training')
+            _check_validation_overlap(training_rows, rows)
+            return dict(rows=rows, fingerprint=fingerprint, interval_steps=interval, manifest=status['manifest'],
+                        training_fingerprint=hashlib.sha256(training_raw).hexdigest())
 
 
 def list_projects(root='training'):
@@ -289,6 +463,12 @@ def clone_project(name, root='training'):
         stats=cloned.get('stats')
         if isinstance(stats,dict) and stats.get('prepared_manifest'):
             stats['prepared_manifest']=_rebase_project_path(stats['prepared_manifest'],source_dataset,target_dataset)
+        validation=cloned.get('validation')
+        if isinstance(validation,dict) and validation.get('manifest'):
+            validation['manifest']=_rebase_project_path(validation['manifest'],source_dataset,target_dataset)
+            stats=validation.get('stats')
+            if isinstance(stats,dict) and stats.get('prepared_manifest'):
+                stats['prepared_manifest']=_rebase_project_path(stats['prepared_manifest'],source_dataset,target_dataset)
         training=cloned.get('training')
         if isinstance(training,dict):
             if training.get('eval_reference'):

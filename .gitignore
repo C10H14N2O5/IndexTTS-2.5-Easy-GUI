@@ -44,6 +44,7 @@ desktop.ini
 /models/asr/*
 !/models/asr/README.md
 /voices/
+/validation/
 /emotion_descriptions/
 /accelerator_wheels/*.whl
 

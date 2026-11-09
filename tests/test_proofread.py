@@ -3,7 +3,9 @@ import hashlib
 import json
 import tempfile
 import threading
+import time
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -303,6 +305,7 @@ class RoutesTests(CorpusFixture, unittest.TestCase):
     def test_http_session_isolation_and_clear(self):
         first = self.post("select", {"directory": str(self.corpus)}).json()
         self.assertEqual(len(first["items"]), 5)
+        self.assertEqual(first["role"], "training")
         second_token = self.client.post("/proofread/api/session").json()["token"]
         second = self.client.get("/proofread/api/session", headers={"X-Session-Token": second_token}).json()
         self.assertEqual(second["items"], [])
@@ -350,6 +353,65 @@ class RoutesTests(CorpusFixture, unittest.TestCase):
         finally:
             batch.cancel.set()
             batch.thread.join(5)
+
+    def test_validation_role_reuses_asr_and_proofreading_without_updating_training_manifest(self):
+        validation = self.root / "验证集"
+        validation.mkdir()
+        validation_clip = validation / "unseen.wav"
+        for clip, sample in ((self.corpus / "1.wav", b"\0\0"), (validation_clip, b"\1\0")):
+            with wave.open(str(clip), "wb") as stream:
+                stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                stream.writeframes(sample * 16000)
+        project_path = self.root / "training/projects/voice/project.json"
+        project_path.parent.mkdir(parents=True)
+        project_path.write_text(json.dumps({
+            "source_folder": str(self.corpus), "language": "ZH",
+            "validation": {"source_folder": str(validation)},
+        }), encoding="utf-8")
+        context = {"project": "voice", "language": "ZH"}
+        self.assertEqual(self.post("select", {**context, "directory": str(self.corpus)}).status_code, 200)
+        training = self.post("manifest/update", {})
+        self.assertEqual(training.status_code, 200, training.text)
+        training_path = Path(training.json()["status"]["manifest"])
+        original_manifest = training_path.read_bytes()
+
+        validation_context = {**context, "role": "validation"}
+        self.post("select", {**validation_context, "directory": str(self.corpus)})
+        self.assertEqual(self.post("manifest/update", {}).status_code, 400)
+        selection = self.post("select", {**validation_context, "directory": str(validation)}).json()
+        self.assertEqual(selection["role"], "validation")
+        self.assertEqual(self.post("manifest/update", {"role": "training"}).status_code, 409)
+        ident = selection["items"][0]["id"]
+        transcript = validation_clip.with_suffix(".txt")
+        response = self.post("asr/item", {"id": ident, "version": "missing"})
+        self.assertEqual(response.json()["text"], "识别正文。")
+        self.assertFalse(transcript.exists())
+        self.assertEqual(self.post("asr/start", {}).status_code, 200)
+        deadline = time.monotonic() + 5
+        while True:
+            job = self.client.get("/proofread/api/asr/status", headers=self.headers).json()["job"]
+            if not job["running"] or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        self.assertFalse(job["running"])
+        self.assertEqual(job["succeeded"], 1)
+        self.assertEqual(transcript.read_text(encoding="utf-8"), "识别正文。")
+
+        validation_result = self.post("manifest/update", {"role": "validation"})
+        self.assertEqual(validation_result.status_code, 200, validation_result.text)
+        status = validation_result.json()["status"]
+        self.assertEqual(status["role"], "validation")
+        self.assertEqual(status["stats"]["valid"], 1)
+        validation_path = Path(status["manifest"])
+        self.assertEqual(validation_path, training_path.with_name("validation.jsonl"))
+        self.assertEqual(Path(json.loads(validation_path.read_text(encoding="utf-8"))["audio"]), validation_clip.resolve())
+
+        version = self.client.get(f"/proofread/api/item?id={ident}", headers=self.headers).json()["version"]
+        self.assertEqual(self.post("save", {"id": ident, "text": "手动校对。", "version": version}).status_code, 200)
+        status = self.client.get("/proofread/api/manifest/status", headers=self.headers).json()
+        self.assertTrue(status["stale"])
+        self.assertEqual(status["role"], "validation")
+        self.assertEqual(training_path.read_bytes(), original_manifest)
 
 
 if __name__ == "__main__":

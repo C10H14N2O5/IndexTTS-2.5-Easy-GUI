@@ -52,6 +52,7 @@ TRAINING_DIR = ROOT / "training"
 TRAINING_PROJECTS_DIR = TRAINING_DIR / "projects"
 TRAINING_DATASETS_DIR = TRAINING_DIR / "datasets"
 TRAINING_OUTPUTS_DIR = TRAINING_DIR / "outputs"
+VALIDATION_DIR = ROOT / "validation"
 DIALOGUE_MAX_SEGMENTS = 12
 for p in (MODEL_DIR, OUTPUTS_DIR, VOICES_DIR, EMOTION_DESCRIPTIONS_DIR, CACHE_DIR, TEMP_DIR, TRAINING_PROJECTS_DIR, TRAINING_DATASETS_DIR, TRAINING_OUTPUTS_DIR):
     p.mkdir(parents=True, exist_ok=True)
@@ -1435,7 +1436,9 @@ def load_training_project(name):
         _publish_global_status(t('Dataset project'), t('Loaded project: {0}.', name), "success", t('Prepared dataset and language controls synchronized.'))
     else:
         _publish_global_status(t('Dataset project'), t('No project selected.'), "info")
-    return meta.get('source_folder',''), meta.get('manifest',''), localize_backend_message(dataset_summary(meta.get('stats',{}))), label
+    return (meta.get('source_folder',''), meta.get('manifest',''),
+            localize_backend_message(dataset_summary(meta.get('stats',{}))), label,
+            *validation_project_values(name, meta))
 
 def sync_training_project_selection(name):
     from indextts_training.dataset import load_project
@@ -1479,7 +1482,28 @@ def create_dataset_project(project_name):
 
 
 @project_transaction
-def save_dataset_project(project, new_name, source_folder, manifest, language):
+def save_dataset_project(project, new_name, source_folder, manifest, language, role="training", validation_folder=""):
+    if role == "validation":
+        from indextts_training.dataset import configure_validation
+
+        if not project:
+            raise gr.Error(t('Create or select a project first.'))
+        if not str(validation_folder or "").strip():
+            raise gr.Error(t('Select and save a validation source folder before starting training.'))
+        try:
+            folder = Path(str(validation_folder).strip()).expanduser().resolve()
+            default_folder = VALIDATION_DIR / _safe_name(project)
+            if folder == default_folder and folder.is_relative_to(VALIDATION_DIR):
+                folder.mkdir(parents=True, exist_ok=True)
+            if not folder.is_dir():
+                raise ValueError('Validation audio folder does not exist: {0}'.format(folder))
+            configure_validation(project, source_folder=folder, root=TRAINING_DIR)
+        except (OSError, ValueError) as exc:
+            raise gr.Error(localize_backend_message(exc)) from exc
+        status = t('Validation folder saved for {0}.', project)
+        _publish_global_status(t('Dataset project'), status, "success", str(folder))
+        return gr.update(value=project), project, status
+
     name = project or new_name
     safe = _safe_name(name)
     if not safe:
@@ -1534,10 +1558,17 @@ def save_training_project(
     phonetic_ctc_enabled, phonetic_ctc_weight, resume,
     eval_enabled, eval_text, eval_reference, eval_reference_transcript,
     eval_language, eval_whisper_model, eval_whisper_language,
+    validation_enabled=None, validation_interval_steps=None,
 ):
+    from indextts_training.dataset import normalize_validation_interval
+
     safe = _safe_name(project_name)
     if not safe:
         raise gr.Error(t('Enter or select a Training Project name.'))
+    try:
+        interval = normalize_validation_interval(validation_interval_steps)
+    except ValueError as exc:
+        raise gr.Error(localize_backend_message(exc)) from exc
 
     project_dir = TRAINING_DIR / "projects" / safe
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -1557,6 +1588,12 @@ def save_training_project(
     if manifest:
         payload["manifest"] = str(manifest)
     payload["language"] = LANGUAGES.get(dataset_language, dataset_language)
+    if validation_enabled is not None and (payload.get("validation") or validation_enabled or interval is not None):
+        payload["validation"] = {
+            **(payload.get("validation") or {}),
+            "enabled": bool(validation_enabled),
+            "interval_steps": interval,
+        }
 
     persisted_eval = ""
     if eval_reference and Path(str(eval_reference)).is_file():
@@ -1690,6 +1727,7 @@ def load_full_training_project(project_name):
         gr.update(visible=mode_value == "Steps"),
         gr.update(visible=mode_value == "Epochs"),
         t('Loaded project: {0}', project_name) if project_name else t('No project selected.'),
+        *validation_project_values(project_name, meta),
     )
 
 
@@ -1745,7 +1783,7 @@ def _resume_choices(adapter):
 def refresh_resume(adapter,current=None):
     ch=_resume_choices(adapter); valid={v for _,v in ch}; return gr.update(choices=[(t('None'),NONE_SENTINEL),*ch],value=current if current in valid else NONE_SENTINEL)
 
-def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_steps,save_epochs,rank,alpha,dropout,lr,batch,grad_accum,grad_clip,semantic_loss_weight,phonetic_ctc_enabled,phonetic_ctc_weight,resume,eval_enabled,eval_text,eval_reference,eval_reference_transcript,eval_language):
+def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_steps,save_epochs,rank,alpha,dropout,lr,batch,grad_accum,grad_clip,semantic_loss_weight,phonetic_ctc_enabled,phonetic_ctc_weight,resume,eval_enabled,eval_text,eval_reference,eval_reference_transcript,eval_language,validation_enabled=None,validation_interval_steps=None):
     from indextts_training.dataset import load_project
     from indextts_training import TRAINING_MANAGER
     meta=load_project(project,str(TRAINING_DIR)) if project else {}
@@ -1753,11 +1791,6 @@ def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_ste
     if not manifest or not Path(manifest).is_file():
         _publish_global_status(t('LoRA training'), t('A valid prepared dataset is required before training.'), "error")
         raise gr.Error(t('Prepare/select a valid dataset project first.'))
-    from indextts_training.dataset import validate_project_manifest
-    try:
-        validate_project_manifest(project, manifest, str(TRAINING_DIR))
-    except ValueError as exc:
-        raise gr.Error(str(exc)) from exc
     safe=_safe_name(adapter)
     if not safe:
         _publish_global_status(t('LoRA training'), t('An adapter name is required before training.'), "error")
@@ -1778,8 +1811,12 @@ def start_lora_training(project,manifest,adapter,vram,mode,steps,epochs,save_ste
          'resume':None if not resume or resume==NONE_SENTINEL else resume,'seed':1234,'vram':vram,'project':project,'training_root':str(TRAINING_DIR),
          'eval_enabled':bool(eval_enabled),'eval_text':str(eval_text or '').strip(),'eval_reference':str(eval_reference or ''),
          'eval_reference_transcript':str(eval_reference_transcript or '').strip(),'eval_language':LANGUAGES.get(eval_language,eval_language)}
-    (out/'training_config.json').parent.mkdir(parents=True,exist_ok=True); (out/'training_config.json').write_text(json.dumps(cfg,indent=2),encoding='utf-8')
-    result = TRAINING_MANAGER.start(cfg)
+    if validation_enabled is not None:
+        cfg.update(validation_enabled=bool(validation_enabled), validation_interval_steps=validation_interval_steps)
+    try:
+        result = TRAINING_MANAGER.start(cfg)
+    except (OSError, ValueError) as exc:
+        raise gr.Error(localize_backend_message(exc)) from exc
     _publish_global_status(t('LoRA training'), t('Training started.'), "working", t('Adapter: {0} · Dataset: {1}', safe, Path(manifest).name))
     return result
 
@@ -1806,7 +1843,12 @@ def training_progress_html():
     def fmt(v):
         total_minutes=max(0,int(round(v/60.0)))
         return t('{0}h {1:02d}m', total_minutes // 60, total_minutes % 60)
-    running=bool(st.get('running')); title=t('Training') if running else (t('Training complete') if pct>=100 else t('Training'))
+    running=bool(st.get('running'))
+    title=t('Training')
+    if st.get('failed'):
+        title=t('Training failed')
+    elif not running and pct>=100:
+        title=t('Training complete')
     counter=t('{0:,} / {1:,} steps', step, total) if total else t('Idle')
     message=escape(localize_backend_message(st.get('message') or t('Ready')))
     return (f'<div class="fire-progress-card"><div class="fire-progress-head"><div class="fire-progress-title">{title}</div>'
@@ -2235,30 +2277,69 @@ def abx_reveal(session_id, index):
     return abx_render(session_id, index)
 
 
-def proofreading_context(folder, project, language, ui_language):
-    return json.dumps(dict(type="proofread-context", directory=str(folder or ""),
+def validation_folder_value(project, settings):
+    if not project:
+        return ""
+    return settings.get("source_folder") or str(VALIDATION_DIR / _safe_name(project))
+
+
+def validation_project_values(project, meta):
+    from indextts_training.dataset import validation_settings
+
+    settings = validation_settings(meta)
+    return validation_folder_value(project, settings), settings["enabled"], settings["interval_steps"]
+
+
+def reload_validation_after_save(project, role):
+    from indextts_training.dataset import load_project
+
+    if role != "validation":
+        return gr.skip(), gr.skip(), gr.skip()
+    return validation_project_values(project, load_project(project, TRAINING_DIR))
+
+
+def proofreading_context(folder, project, language, ui_language, role="training", validation_folder=""):
+    if role == "validation":
+        from indextts_training.dataset import load_project
+
+        candidate = str(validation_folder or "").strip()
+        folder = candidate if candidate and Path(candidate).expanduser().is_dir() else ""
+        language = load_project(project, TRAINING_DIR).get("language", "EN")
+    return json.dumps(dict(type="proofread-context", directory=str(folder or ""), role=role,
                            project=project or "", language=LANGUAGES.get(language, language),
                            ui_language=ui_language), ensure_ascii=False)
 
 
-def handle_proofread_event(raw, current_project):
-    from indextts_training.dataset import load_project, dataset_summary
+def handle_proofread_event(raw, current_project, current_role="training"):
+    from indextts_training.dataset import load_project, dataset_summary, validation_settings
+
     unchanged = lambda: gr.update()
     try:
         data = json.loads(raw)
         project = data.get("project") or ""
+        role = data.get("role", "training")
+        if role not in ("training", "validation"):
+            return tuple(unchanged() for _ in range(9))
         if data.get("type") == "proofread-context-rejected":
             language = next((name for name, code in LANGUAGES.items() if code == data.get("language")), "Chinese")
             meta = load_project(project, str(TRAINING_DIR))
-            return (data.get("directory", ""), gr.update(value=project or None), language,
-                    meta.get("manifest", ""), meta.get("manifest", ""), localize_backend_message(dataset_summary(meta.get("stats", {}))))
-        if data.get("type") == "proofread-updated" and project == (current_project or ""):
+            settings = validation_settings(meta)
+            training_folder = meta.get("source_folder", "") if role == "validation" else data.get("directory", "")
+            validation_folder = (data.get("directory") if role == "validation" else None) or validation_folder_value(project, settings)
+            return (training_folder, validation_folder, role, gr.update(value=project or None), language,
+                    meta.get("manifest", ""), meta.get("manifest", ""),
+                    localize_backend_message(dataset_summary(meta.get("stats", {}))), "")
+        if (data.get("type") == "proofread-updated" and project == (current_project or "")
+                and role == current_role):
+            if role == "validation":
+                return (unchanged(), data.get("directory") or unchanged(), *(unchanged() for _ in range(7)))
             meta = load_project(project, str(TRAINING_DIR)) if project else {}
-            return (data.get("directory") or unchanged(), unchanged(), unchanged(),
-                    meta.get("manifest", ""), meta.get("manifest", ""), localize_backend_message(dataset_summary(meta.get("stats", {}))))
+            return (data.get("directory") or unchanged(), unchanged(), unchanged(), unchanged(), unchanged(),
+                    meta.get("manifest", ""), meta.get("manifest", ""),
+                    localize_backend_message(dataset_summary(meta.get("stats", {}))), unchanged())
     except (ValueError, OSError, TypeError):
         pass
-    return tuple(unchanged() for _ in range(6))
+    return tuple(unchanged() for _ in range(9))
 
 
 PROOFREAD_BRIDGE = r"""() => {
@@ -2271,6 +2352,7 @@ PROOFREAD_BRIDGE = r"""() => {
         if (data.type === 'proofread-ready') {
             if (window.__proofreadContext) frame.contentWindow.postMessage(window.__proofreadContext, location.origin);
         } else if (['proofread-context-rejected','proofread-updated'].includes(data.type)) {
+            if (data.type === 'proofread-context-rejected') window.__proofreadContext = null;
             const input = document.querySelector('#proofread-event textarea, #proofread-event input');
             const button = document.querySelector('#proofread-event-button button') || document.getElementById('proofread-event-button');
             if (input && button) {
@@ -2620,7 +2702,7 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             gr.Markdown(t('*Organize project audio/transcripts and prepare an IndexTTS 2.5 training manifest.*'), elem_classes=["tab-subtitle"])
             with gr.Accordion(t('📖 Quick Guide'), open=False, elem_classes=["quick-guide"]):
                 gr.Markdown(
-                    t('Create or select a project and save its source folder and language. Recognize missing text in the proofreading workbench, review and save transcripts, then update the training manifest.')
+                    t('Save the training folder and language, then optionally save a separate validation folder. Select each dataset, transcribe or proofread its audio, and update its manifest.')
                 )
 
             with gr.Row(elem_classes=["project-strip"]):
@@ -2635,14 +2717,23 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
                     t('🗑️ Delete Project'), variant="stop", scale=1, elem_classes=["training-red"]
                 )
 
-            with gr.Row():
-                dataset_source_folder = gr.Textbox(label=t('Source Audio Folder'), scale=8)
-                dataset_browse_source = gr.Button(t('📁 Browse'), scale=1, min_width=120)
-                dataset_language = gr.Dropdown(localized_choices(list(LANGUAGES)), value="English", label=t('Language / Dialect'), scale=3)
-
-            dataset_build_scan_btn = gr.Button(
-                t('Build / Scan Dataset'), variant="secondary"
+            dataset_role = gr.Radio(
+                localized_choices([("Training Set", "training"), ("Validation Set", "validation")]),
+                value="training", label=t('Dataset'),
             )
+            with gr.Group() as training_source_controls:
+                with gr.Row():
+                    dataset_source_folder = gr.Textbox(label=t('Source Audio Folder'), scale=8)
+                    dataset_browse_source = gr.Button(t('📁 Browse'), scale=1, min_width=120)
+                    dataset_language = gr.Dropdown(localized_choices(list(LANGUAGES)), value="English", label=t('Language / Dialect'), scale=3)
+                dataset_build_scan_btn = gr.Button(t('Build / Scan Dataset'), variant="secondary")
+
+            with gr.Row(visible=False) as validation_source_controls:
+                validation_source_folder = gr.Textbox(
+                    label=t('Validation Audio Folder'), scale=8,
+                    info=t('Uses the saved project language. Saving the suggested folder creates it if needed.'),
+                )
+                validation_browse_source = gr.Button(t('📁 Browse'), scale=1, min_width=120)
             dataset_summary_box = gr.State("")
             dataset_stats_state = gr.State("")
 
@@ -2726,6 +2817,13 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
                     micro_batch = gr.Number(1, precision=0, visible=False)
                     grad_clip = gr.Number(0.5, precision=2, visible=False)
                     lora_internal_note = gr.Markdown("", visible=False)
+
+            with gr.Accordion(t('Validation Loss'), open=False):
+                validation_enabled = gr.Checkbox(False, label=t('Enable Validation Loss'))
+                validation_interval_steps = gr.Number(
+                    value=None, label=t('Validation Interval (Optimizer Steps)'),
+                    info=t('Leave blank to validate at checkpoints. Validation also runs at the final step.'),
+                )
 
             with gr.Accordion(t('🎧 Eval Audio + TensorBoard'), open=True):
                 with gr.Row():
@@ -2879,10 +2977,17 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
         cmd_console_timer = gr.Timer(0.5)
 
 
+    proofread_inputs = [dataset_source_folder, dataset_project_select, dataset_language, ui_language,
+                        dataset_role, validation_source_folder]
+    validation_controls = [validation_source_folder, validation_enabled, validation_interval_steps]
     dataset_browse_source.click(
         browse_dataset_folder, dataset_source_folder, dataset_source_folder,
         queue=False, show_progress="hidden",
-    ).then(proofreading_context, [dataset_source_folder, dataset_project_select, dataset_language, ui_language], proofread_context, queue=False)
+    ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    validation_browse_source.click(
+        browse_dataset_folder, validation_source_folder, validation_source_folder,
+        queue=False, show_progress="hidden",
+    ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
     dataset_create_project.click(
         create_dataset_project, dataset_project_name,
         [dataset_project_select, dataset_project_name, dataset_project_status],
@@ -2890,10 +2995,13 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
     )
     dataset_save_project.click(
         save_dataset_project,
-        [dataset_project_select, dataset_project_name, dataset_source_folder, dataset_manifest, dataset_language],
+        [dataset_project_select, dataset_project_name, dataset_source_folder, dataset_manifest, dataset_language,
+         dataset_role, validation_source_folder],
         [dataset_project_select, dataset_project_name, dataset_project_status],
         queue=False, show_progress="hidden",
-    )
+    ).success(
+        reload_validation_after_save, [dataset_project_select, dataset_role], validation_controls, queue=False,
+    ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
     dataset_clone_project.click(
         clone_dataset_project,
         dataset_project_select,
@@ -2911,7 +3019,7 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
             eval_enabled, eval_text, eval_reference, eval_reference_transcript,
             eval_language, eval_whisper_model, eval_whisper_language,
-            steps_group, epochs_group, autotune_status,
+            steps_group, epochs_group, autotune_status, *validation_controls,
         ],
         queue=False, show_progress="hidden",
     )
@@ -2920,11 +3028,10 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
         [train_project, dataset_project_select, dataset_project_status],
         queue=False, show_progress="hidden",
     )
-    proofread_inputs = [dataset_source_folder, dataset_project_select, dataset_language, ui_language]
     dataset_project_select.change(
         load_training_project,
         dataset_project_select,
-        [dataset_source_folder, dataset_manifest, dataset_summary_box, dataset_language],
+        [dataset_source_folder, dataset_manifest, dataset_summary_box, dataset_language, *validation_controls],
         queue=False, show_progress="hidden",
     ).then(
         lambda name: t('Loaded project: {0}', name) if name else t('No project selected.'),
@@ -2936,15 +3043,22 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
         [train_project, dataset_manifest_train, autotune_status],
         queue=False, show_progress="hidden",
     ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    dataset_role.change(
+        lambda role: (gr.update(visible=role == "training"), gr.update(visible=role == "validation"),
+                      gr.update(visible=role == "training")),
+        dataset_role, [training_source_controls, validation_source_controls, dataset_manifest], queue=False,
+    )
     demo.load(proofreading_context, proofread_inputs, proofread_context, queue=False)
-    dataset_source_folder.submit(proofreading_context, proofread_inputs, proofread_context, queue=False)
-    dataset_source_folder.blur(proofreading_context, proofread_inputs, proofread_context, queue=False)
-    for context_control in (dataset_language, ui_language):
+    for folder_control in (dataset_source_folder, validation_source_folder):
+        folder_control.submit(proofreading_context, proofread_inputs, proofread_context, queue=False)
+        folder_control.blur(proofreading_context, proofread_inputs, proofread_context, queue=False)
+    for context_control in (dataset_language, ui_language, dataset_role):
         context_control.input(proofreading_context, proofread_inputs, proofread_context, queue=False, show_progress="hidden")
     proofread_context.change(None, proofread_context, None, js=PROOFREAD_CONTEXT_JS, queue=False)
-    proofread_event_btn.click(handle_proofread_event, [proofread_event, dataset_project_select],
-                              [dataset_source_folder, dataset_project_select, dataset_language,
-                               dataset_manifest, dataset_manifest_train, dataset_summary_box],
+    proofread_event_btn.click(handle_proofread_event, [proofread_event, dataset_project_select, dataset_role],
+                              [dataset_source_folder, validation_source_folder, dataset_role,
+                               dataset_project_select, dataset_language,
+                               dataset_manifest, dataset_manifest_train, dataset_summary_box, proofread_context],
                               queue=False, show_progress="hidden")
 
     dataset_build_scan_btn.click(
@@ -2963,7 +3077,7 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
             eval_enabled, eval_text, eval_reference, eval_reference_transcript,
             eval_language, eval_whisper_model, eval_whisper_language,
-            steps_group, epochs_group, autotune_status, dataset_project_select,
+            steps_group, epochs_group, autotune_status, *validation_controls, dataset_project_select,
         ],
         queue=False, show_progress="hidden",
     ).then(proofreading_context, proofread_inputs, proofread_context, queue=False)
@@ -2994,6 +3108,7 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
             eval_enabled, eval_text, eval_reference, eval_reference_transcript,
             eval_language, eval_whisper_model, eval_whisper_language,
+            validation_enabled, validation_interval_steps,
         ],
         [train_project, dataset_project_select, autotune_status],
     )
@@ -3009,7 +3124,7 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             phonetic_ctc_enabled, phonetic_ctc_weight, resume_checkpoint,
             eval_enabled, eval_text, eval_reference, eval_reference_transcript,
             eval_language, eval_whisper_model, eval_whisper_language,
-            steps_group, epochs_group, autotune_status, dataset_project_status,
+            steps_group, epochs_group, autotune_status, *validation_controls, dataset_project_status,
         ],
         queue=False, show_progress="hidden",
     )
@@ -3027,6 +3142,7 @@ with gr.Blocks(title=f"{t(APP_TITLE)} v{APP_VERSION}", js=PROOFREAD_BRIDGE, css=
             lora_dropout, learning_rate, micro_batch, grad_accum, grad_clip, semantic_loss_weight,
             phonetic_ctc_enabled, phonetic_ctc_weight,
             resume_checkpoint, eval_enabled, eval_text, eval_reference, eval_reference_transcript, eval_language,
+            validation_enabled, validation_interval_steps,
         ],
         training_message,
     )

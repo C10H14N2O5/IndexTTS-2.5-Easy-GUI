@@ -13,14 +13,14 @@ header{padding:18px 24px}.context-bar{padding:14px 24px;background:white;border-
 </style>
 </head>
 <body>
-<header><div><h1 data-i18n="title">听音校对</h1><div class="sub" data-i18n="subtitle">识别缺失文本，逐条听音校对，再更新训练清单。</div></div><span class="local" data-i18n="local">● 在 GUI 服务器本地处理</span></header>
+<header><div><h1 data-i18n="title">听音校对</h1><div class="sub" data-i18n="subtitle">识别缺失文本，逐条听音校对，再更新当前语料的清单。</div></div><span class="local" data-i18n="local">● 在 GUI 服务器本地处理</span></header>
 <div class="context-bar">
   <div class="directory-row"><label for="directoryInput" data-i18n="serverFolder">服务器语料目录</label><input id="directoryInput" type="text" spellcheck="false" data-placeholder="folderPlaceholder" placeholder="填写运行 GUI 的电脑上的目录路径"><button id="selectDir" data-i18n="loadFolder">加载目录</button><button id="refreshList" data-i18n="refresh">刷新</button></div>
   <div class="context-meta"><span id="projectLabel"></span><span data-i18n="folderNote">包含子目录；文件搜索和筛选不改变批量识别范围。</span></div>
 </div>
 <div class="pipeline">
   <section aria-labelledby="asrHeading"><div class="group"><strong id="asrHeading">SenseVoiceSmall Q8 · CPU</strong><button id="batchStart" class="primary" data-i18n="batchStart">识别缺失文本</button><button id="batchStop" data-i18n="stop" hidden>停止识别</button></div><p id="asrStatus" aria-live="polite"></p><progress id="asrProgress" class="asr-progress" max="1" value="0" hidden></progress></section>
-  <section><div class="group"><button id="manifestUpdate" data-i18n="updateManifest">更新训练清单</button><span id="manifestBadge" class="badge"></span></div><p id="manifestStatus" aria-live="polite"></p><p id="manifestPath" class="manifest-path"></p></section>
+  <section><div class="group"><button id="manifestUpdate">更新训练清单</button><span id="manifestBadge" class="badge"></span></div><p id="manifestStatus" aria-live="polite"></p><p id="manifestStats"></p><p id="manifestPath" class="manifest-path"></p></section>
 </div>
 <div class="layout">
   <aside><div class="progress-row"><span data-i18n="reviewProgress">校对进度</span><span id="counts">0 / 0</span></div><progress id="progress" max="1" value="0"></progress><input id="search" type="search" data-placeholder="search" data-aria="search" placeholder="搜索相对文件路径…" aria-label="搜索相对文件路径"><div class="filters" role="group" data-aria="filters"><button class="active" data-filter="all" data-i18n="all">全部</button><button data-filter="pending" data-i18n="pending">未校对</button><button data-filter="done" data-i18n="done">已校对</button></div><nav id="fileList" data-aria="audioFiles" aria-label="音频文件"></nav></aside>
@@ -40,9 +40,9 @@ header{padding:18px 24px}.context-bar{padding:14px 24px;background:white;border-
 'use strict';
 const $ = id => document.getElementById(id);
 const translations = {
-  title:['听音校对','Audio proofreading'], subtitle:['识别缺失文本，逐条听音校对，再更新训练清单。','Transcribe missing text, review each clip, then update the training manifest.'],
+  title:['听音校对','Audio proofreading'], subtitle:['识别缺失文本，逐条听音校对，再更新当前语料的清单。','Transcribe missing text, review each clip, then update the manifest for this dataset.'],
   local:['● 在 GUI 服务器本地处理','● Processed locally on the GUI server'], serverFolder:['服务器语料目录','Server audio folder'], folderPlaceholder:['填写运行 GUI 的电脑上的目录路径','A folder on the computer running the GUI'], loadFolder:['加载目录','Load folder'], refresh:['刷新','Refresh'], folderNote:['包含子目录；文件搜索和筛选不改变批量识别范围。','Includes subfolders. Search and filters do not limit batch transcription.'],
-  project:['项目：{name}','Project: {name}'], noProject:['未选择项目 · 可校对目录，选择并保存项目后可更新训练清单','No project selected · Folder proofreading is available; select and save a project to update its manifest.'],
+  project:['项目：{name} · {dataset}','Project: {name} · {dataset}'], noProject:['未选择项目 · 可校对目录，选择并保存项目后可更新清单','No project selected · Folder proofreading is available; select and save a project to update its manifest.'],
   batchStart:['识别缺失文本','Transcribe missing text'], stop:['停止识别','Stop transcription'], updateManifest:['更新训练清单','Update training manifest'], reviewProgress:['校对进度','Review progress'], search:['搜索相对文件路径…','Search relative file paths…'], filters:['校对状态筛选','Review status filters'], all:['全部','All'], pending:['未校对','Pending'], done:['已校对','Reviewed'], audioFiles:['音频文件','Audio files'],
   emptyTitle:['从一段声音开始','Start with a clip'], emptyBody:['在上方选择项目语料目录，或直接填写服务器目录。缺少 TXT 时，可一键识别后继续校对。','Choose a project audio folder above, or enter a server folder. Transcribe missing TXT files with one click before reviewing.'], replay:['↻ 从头重播','↻ Replay from start'], speed:['播放速度','Playback speed'], text:['对应文本','Transcript'], editorPlaceholder:['听音后输入对应文本…','Listen and enter the transcript…'], editorNote:['保留原话、重复与语气词；不补全音频里没有的话。','Keep the actual words, repetitions and interjections. Do not add words absent from the audio.'],
   previous:['← 上一条','← Previous'], next:['下一条 →','Next →'], save:['保存','Save'], saveNext:['保存并下一条 →','Save and next →'], saveNextShort:['保存并下一条','Save and next'], retranscribe:['重新识别当前条目','Transcribe this clip again'], reload:['重新加载磁盘文本','Reload text from disk'], playPause:['播放 / 暂停','Play / pause'], unsavedTitle:['当前文本尚未保存','Unsaved transcript'], unsavedBody:['先保存这次修改，还是放弃修改并继续？','Save these edits, or discard them and continue?'], cancel:['取消','Cancel'], discard:['放弃修改','Discard edits'], saveContinue:['保存并继续','Save and continue'],
@@ -50,14 +50,18 @@ const translations = {
   invalidResponse:['服务器返回了无效响应，请检查 GUI 日志。','The server returned an invalid response. Check the GUI log.'], operationFailed:['操作失败，请重试。','Operation failed. Please retry.'], blankText:['文本为空，无法保存。请先听音并填写对应文本。','An empty transcript cannot be saved. Listen to the clip and enter its text.'], savedReview:['已保存，并标记为已校对。','Saved and marked as reviewed.'], savedText:['文本已保存。训练前请更新清单。','Transcript saved. Update the manifest before training.'], savedPrevious:['上一条已保存并标记为已校对。','The previous clip was saved and marked as reviewed.'], lastItem:['当前列表已到最后一条，文本已保存并标记为已校对。','End of the current list. The transcript was saved and marked as reviewed.'], folderLoaded:['目录已加载。音频不会自动播放。','Folder loaded. Audio will not autoplay.'], chooseFolder:['请先填写服务器语料目录。','Enter a server audio folder first.'],
   reloadConfirm:['重新加载将放弃当前未保存的修改，是否继续？','Reloading will discard the unsaved edits. Continue?'], reloaded:['已重新读取磁盘中的文本。','Text reloaded from disk.'], reviewed:['已标记为已校对。','Marked as reviewed.'], unreviewed:['已取消校对标记。','Marked as pending.'], playError:['无法播放音频：{error}','Unable to play audio: {error}'], audioError:['音频加载或解码失败，请检查文件是否仍存在且可播放。','Audio could not be loaded or decoded. Check that the file exists and is playable.'],
   modelChecking:['正在检查 ASR 运行时…','Checking the ASR runtime…'], modelReady:['模型已就绪。仅补充缺失或空白 TXT，已有正文会跳过。','Model ready. Only missing or blank TXT files are filled; existing transcripts are skipped.'], batchWorking:['{completed}/{total} · 成功 {succeeded} · 跳过 {skipped} · 失败 {failed}\n当前：{current}','{completed}/{total} · Succeeded {succeeded} · Skipped {skipped} · Failed {failed}\nCurrent: {current}'], batchFinished:['识别完成：成功 {succeeded}，跳过 {skipped}，失败 {failed}。','Transcription complete: {succeeded} succeeded, {skipped} skipped, {failed} failed.'], batchCancelled:['识别已停止，已完成结果已保留。成功 {succeeded}，跳过 {skipped}。','Transcription stopped. Completed results were kept: {succeeded} succeeded, {skipped} skipped.'], batchStopRequested:['正在停止识别，已完成的文本会保留。','Stopping transcription. Completed transcripts will be kept.'], batchSwitchBlocked:['识别期间不能切换项目或目录。请先停止识别。','Stop transcription before changing the project or folder.'], batchStartNotice:['正在识别所选目录及子目录中缺失或空白的 TXT。','Transcribing missing or blank TXT files throughout this folder and its subfolders.'], singleWorking:['正在重新识别当前音频，结果将进入编辑框…','Transcribing this clip. The result will be placed in the editor…'], singleReady:['识别结果已放入编辑框，尚未写入 TXT。请检查后保存。','The transcript is in the editor and has not been written to TXT. Review it, then save.'],
-  noManifestProject:['选择并保存项目后，可生成或更新训练清单。','Select and save a project to create or update its training manifest.'], stale:['待更新','Update needed'], upToDate:['已同步','Up to date'], notReady:['待配置项目','Project setup needed'], manifestUpdated:['训练清单已更新，使用已保存的 TXT 正文。','Training manifest updated from the saved TXT files.'], manifestUpdating:['正在更新训练清单…','Updating the training manifest…'], contextRetained:['已保留当前校对项目和未保存内容。','The current proofreading context and unsaved edits were retained.'], sessionLost:['校对连接失效，请先复制未保存的文本，再刷新页面。','The proofreading session is unavailable. Copy any unsaved text before refreshing.']
+  noManifestProject:['选择并保存项目后，可生成或更新清单。','Select and save a project to create or update its manifest.'], stale:['待更新','Update needed'], upToDate:['已同步','Up to date'], notReady:['待配置项目','Project setup needed'], manifestUpdated:['已用保存的 TXT 更新当前清单。','The current manifest was updated from the saved TXT files.'], manifestUpdating:['正在更新当前清单…','Updating the current manifest…'], contextRetained:['已保留当前校对项目和未保存内容。','The current proofreading context and unsaved edits were retained.'], sessionLost:['校对连接失效，请先复制未保存的文本，再刷新页面。','The proofreading session is unavailable. Copy any unsaved text before refreshing.'],
+  trainingDataset:['训练集','Training set'], validationDataset:['验证集','Validation set'], updateValidationManifest:['更新验证清单','Update validation manifest'],
+  manifestMissing:['尚未生成清单。','The manifest has not been prepared.'], manifestStale:['语料已变更，请更新清单。','The dataset changed. Update the manifest.'], manifestReady:['清单与已保存的语料一致。','The manifest matches the saved dataset.'],
+  manifestStats:['上次生成时：共 {samples} 条，有效 {valid} 条，筛除 {filtered} 条，缺文本 {missing} 条。','At last update: {samples} clips, {valid} valid, {filtered} filtered out, {missing} missing text.']
 };
 let locale = 'zh_CN';
-let token = '', context = {directory:'',project:'',language:'ZH'}, items = [], current = null;
+let token = '', context = {directory:'',project:'',language:'ZH',role:'training'}, items = [], current = null;
 let original = '', filter = 'all', busy = false, pendingContext = null, contextVersion = 0;
 let asr = {available:false,job:{}}, manifest = null, polling = false, ready = false;
 const dirty = () => current !== null && $('editor').value !== original;
 const jobRunning = () => Boolean(asr.job && asr.job.running);
+const datasetRole = role => role === 'validation' ? 'validation' : 'training';
 function t(key, values={}) {
   const pair = translations[key] || [key,key];
   return pair[locale === 'en_US' ? 1 : 0].replace(/\{(\w+)\}/g, (_, name) => String(values[name] ?? ''));
@@ -89,7 +93,8 @@ function paint() {
   const done = items.filter(item => item.reviewed).length;
   $('counts').textContent = `${done} / ${items.length}`;
   $('progress').max = items.length || 1; $('progress').value = done;
-  $('projectLabel').textContent = context.project ? t('project',{name:context.project}) : t('noProject');
+  const dataset = t(context.role === 'validation' ? 'validationDataset' : 'trainingDataset');
+  $('projectLabel').textContent = context.project ? t('project',{name:context.project,dataset}) : t('noProject');
   const list = $('fileList'), scrollTop = list.scrollTop;
   list.replaceChildren();
   for (const item of visible()) {
@@ -113,10 +118,15 @@ function paintPipeline() {
   $('asrStatus').textContent=text; $('asrStatus').classList.toggle('error',Boolean(job.error) || (ready&&!asr.available));
   $('asrProgress').hidden=!job.running; $('asrProgress').max=job.total||1; $('asrProgress').value=job.completed||0;
   $('batchStop').hidden=!job.running;
+  $('manifestUpdate').textContent=t(context.role==='validation'?'updateValidationManifest':'updateManifest');
   $('manifestBadge').textContent=context.project && manifest ? t(manifest.available===false?'notReady':manifest.stale?'stale':'upToDate') : '';
   $('manifestBadge').classList.toggle('done',Boolean(manifest&&manifest.available!==false&&!manifest.stale));
-  $('manifestStatus').textContent=context.project ? (manifest?.message || '') : t('noManifestProject');
+  const statusLabel={missing:'manifestMissing',stale:'manifestStale',ready:'manifestReady'}[manifest?.status];
+  $('manifestStatus').textContent=context.project ? (statusLabel?t(statusLabel):manifest?.message||'') : t('noManifestProject');
   $('manifestStatus').classList.toggle('warning',Boolean(manifest?.stale));
+  const stats=manifest?.stats;
+  $('manifestStats').textContent=Number.isFinite(stats?.samples) && Number.isFinite(stats?.valid)
+    ? t('manifestStats',{samples:stats.samples,valid:stats.valid,filtered:stats.samples-stats.valid,missing:stats.missing_text||0}) : '';
   $('manifestPath').textContent=manifest?.manifest || '';
 }
 function updateControls() {
@@ -189,7 +199,7 @@ function clearEditor() {
   current=null; original=''; $('editor').value=''; $('filename').textContent=''; $('audio').pause(); $('audio').removeAttribute('src'); $('audio').load(); $('workspace').hidden=true; $('empty').hidden=false;
 }
 async function acceptSnapshot(data) {
-  token=data.token||token; context={directory:data.directory||'',project:data.project||'',language:data.language||'ZH'};
+  token=data.token||token; context={directory:data.directory||'',project:data.project||'',language:data.language||'ZH',role:datasetRole(data.role)};
   $('directoryInput').value=context.directory; items=data.items||[]; if(data.asr) asr=data.asr;
   clearEditor(); manifest=null; paint();
   if(items.length) await load(items.some(item=>item.id===data.last_id)?data.last_id:items[0].id);
@@ -199,14 +209,14 @@ async function acceptSnapshot(data) {
 async function refreshManifest() {
   if(!context.project) { manifest=null; paintPipeline(); return; }
   const version=contextVersion;
-  try { const data=await api('manifest/status'); if(version===contextVersion) manifest=data; }
+  try { const data=await api('manifest/status'); if(version===contextVersion && (!data.role || data.role===context.role)) manifest=data; }
   catch(error) { if(version===contextVersion) manifest={stale:true,message:error.message}; }
   paintPipeline(); updateControls();
 }
 async function refreshSnapshot(background=false) {
   const version=contextVersion, activeId=current?.id, activeVersion=current?.version;
   const data=await api('session');
-  if(version!==contextVersion || (background&&busy)) return;
+  if(version!==contextVersion || datasetRole(data.role)!==context.role || (background&&busy)) return;
   items=data.items||[]; if(data.asr) asr=data.asr;
   // Polling must never replace unsaved text or switch the user's active clip.
   if(activeId && current?.id===activeId && items.some(item=>item.id===activeId) && !dirty()) {
@@ -217,9 +227,9 @@ async function refreshSnapshot(background=false) {
 }
 function samePath(a,b) { return String(a||'').replace(/\\/g,'/').replace(/\/+$/,'').toLocaleLowerCase()===String(b||'').replace(/\\/g,'/').replace(/\/+$/,'').toLocaleLowerCase(); }
 async function changeContext(next, fromParent=false) {
-  const candidate={directory:String(next.directory||'').trim(),project:String(next.project||''),language:String(next.language||'ZH')};
+  const candidate={directory:String(next.directory||'').trim(),project:String(next.project||''),language:String(next.language||'ZH'),role:datasetRole(next.role)};
   if(next.ui_language) { locale=next.ui_language==='en_US'?'en_US':'zh_CN'; localize(); }
-  if(samePath(candidate.directory,context.directory)&&candidate.project===context.project&&candidate.language===context.language) { await refreshManifest(); return true; }
+  if(samePath(candidate.directory,context.directory)&&candidate.project===context.project&&candidate.language===context.language&&candidate.role===context.role) { await refreshManifest(); return true; }
   if(jobRunning()) { message(t('batchSwitchBlocked'),true); if(fromParent) notify('proofread-context-rejected',{...context}); $('directoryInput').value=context.directory; return false; }
   if(!await allowLeave()) { message(t('contextRetained')); if(fromParent) notify('proofread-context-rejected',{...context}); $('directoryInput').value=context.directory; return false; }
   try {
@@ -240,7 +250,8 @@ async function poll() {
     const status=await api('asr/status');
     if(version!==contextVersion) return;
     asr=status;
-    if(!busy) { await refreshSnapshot(true); await refreshManifest(); }
+    if(!busy) { await refreshSnapshot(true); if(version===contextVersion) await refreshManifest(); }
+    if(version!==contextVersion) return;
     if(wasRunning&&!jobRunning()) notify('proofread-updated',{...context});
     paint();
   } catch(error) { if(version===contextVersion) message(error.message,true); }
@@ -284,7 +295,7 @@ $('manifestUpdate').onclick=()=>run(async()=>{
   // Explicitly discarded edits must not appear to have entered the manifest.
   if(dirty()&&current)await load(current.id);
   message(t('manifestUpdating'));
-  const result=await api('manifest/update',{}); manifest=result.status; paintPipeline(); message(t('manifestUpdated'));notify('proofread-updated',{...context,manifest:result.status?.manifest||result.meta?.manifest||''});
+  const result=await api('manifest/update',{role:context.role}); manifest=result.status; paintPipeline(); message(t('manifestUpdated'));notify('proofread-updated',{...context,manifest:result.status.manifest||''});
 });
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent||event.data?.type!=='proofread-context')return;

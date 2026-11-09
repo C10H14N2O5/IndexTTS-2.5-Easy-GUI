@@ -38,10 +38,12 @@ const filters=['all','pending','done'].map(value=>{const el=new Element();el.dat
 const events={}, messages=[], requests=[];
 const origin='http://192.168.50.23:7860';
 const parent={postMessage:(data,to)=>{assert.equal(to,origin);messages.push(data);}};
-const session={token:'test-token',directory:'',project:'',language:'ZH',last_id:null,items:[]};
+const session={token:'test-token',directory:'',project:'',language:'ZH',role:'training',last_id:null,items:[]};
 let disk={id:'clip-1',name:'sub/中文.wav',text:'原始文本',version:'v1',reviewed:false};
 let asr={available:true,message:'ready',job:{running:false,total:0,completed:0,succeeded:0,skipped:0,failed:0}};
 let manifest={stale:false,message:'ready',manifest:'manifest.jsonl',training_running:false};
+const validationManifest={stale:true,status:'missing',manifest:'',training_running:false};
+const activeManifest=()=>session.role==='validation'?validationManifest:manifest;
 let failSave=false;
 function snapshot() {
   return {...session,items:session.directory?[{id:disk.id,name:disk.name,reviewed:disk.reviewed,missing_text:!disk.text.trim()}]:[],asr:structuredClone(asr)};
@@ -61,15 +63,20 @@ const sandbox={
     else if(route==='select'){Object.assign(session,body);data=snapshot();}
     else if(route==='item'){assert.equal(new URLSearchParams(query).get('id'),disk.id);data={...disk};}
     else if(route==='position')data={};
-    else if(route==='manifest/status')data={...manifest};
-    else if(route==='manifest/update'){manifest.stale=false;data={status:{...manifest},meta:{manifest:manifest.manifest}};}
+    else if(route==='manifest/status')data={...activeManifest(),role:session.role};
+    else if(route==='manifest/update'){
+      assert.equal(body.role,session.role);
+      const dataset=activeManifest();
+      Object.assign(dataset,{stale:false,status:'ready',manifest:session.role==='validation'?'validation.jsonl':'manifest.jsonl',stats:{samples:3,valid:2,missing_text:1}});
+      data={status:{...dataset,role:session.role},meta:{manifest:manifest.manifest}};
+    }
     else if(route==='asr/status')data=structuredClone(asr);
     else if(route==='asr/start'){asr.job={...asr.job,running:true,total:1};data=structuredClone(asr);}
     else if(route==='asr/stop'){asr.job.running=false;asr.job.cancelled=true;data=structuredClone(asr);}
     else if(route==='asr/item')data={id:disk.id,version:disk.version,text:'重新识别结果'};
     else if(route==='save'){
       if(failSave)return{ok:false,json:async()=>({error:'TXT changed on disk'})};
-      disk={...disk,text:body.text,version:'v2',reviewed:body.reviewed};manifest.stale=true;data={...disk};
+      disk={...disk,text:body.text,version:'v2',reviewed:body.reviewed};activeManifest().stale=true;data={...disk};
     } else if(route==='review'){disk.reviewed=body.reviewed;data={...disk};}
     else throw new Error(`Unexpected API route ${route}`);
     return{ok:true,json:async()=>data};
@@ -88,6 +95,8 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(elements.get('editor').value,'原始文本');
   assert.equal(elements.get('audio').playCalls,0,'Selecting a clip must not autoplay');
   assert.equal(evaluate('locale'),'en_US');
+  assert.equal(evaluate('context.role'),'training');
+  assert.equal(elements.get('manifestUpdate').textContent,'Update training manifest');
 
   elements.get('editor').value='未保存的人工修改';
   await evaluate('poll()');
@@ -97,6 +106,11 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(evaluate('context.project'),'voice');
   assert.equal(elements.get('editor').value,'未保存的人工修改');
   assert(messages.some(message=>message.type==='proofread-context-rejected'&&message.project==='voice'));
+  const beforeRoleSwitch=requests.filter(request=>request.route==='select').length;
+  await evaluate("run(()=>changeContext({...context,role:'validation'},true))");
+  assert.equal(evaluate('context.role'),'training');
+  assert.equal(requests.filter(request=>request.route==='select').length,beforeRoleSwitch);
+  assert.equal(messages.at(-1).role,'training','A rejected role change must restore the original role');
 
   failSave=true;
   await elements.get('save').click();
@@ -124,6 +138,8 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   const selectCount=requests.filter(request=>request.route==='select').length;
   await evaluate("run(()=>changeContext({directory:'D:/other',project:'other',language:'ZH'},true))");
   assert.equal(requests.filter(request=>request.route==='select').length,selectCount,'Batch jobs must lock context switches');
+  await evaluate("run(()=>changeContext({...context,role:'validation'},true))");
+  assert.equal(requests.filter(request=>request.route==='select').length,selectCount,'Batch jobs must lock role switches');
   await elements.get('batchStop').click();
   assert.equal(asr.job.running,false);
 
@@ -133,9 +149,25 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   manifest.training_running=true;
   await evaluate('refreshManifest()');
   assert.equal(elements.get('manifestUpdate').disabled,true);
+  manifest.training_running=false;
+
+  await evaluate("run(()=>changeContext({...context,role:'validation'},true))");
+  assert.equal(evaluate('context.role'),'validation','Role-only changes must reselect the context');
+  assert.equal(requests.filter(request=>request.route==='select').at(-1).body.role,'validation');
+  assert.equal(elements.get('projectLabel').textContent,'Project: voice · Validation set');
+  assert.equal(elements.get('manifestUpdate').textContent,'Update validation manifest');
+  assert.equal(elements.get('manifestBadge').textContent,'Update needed');
+  await elements.get('manifestUpdate').click();
+  assert.equal(elements.get('manifestPath').textContent,'validation.jsonl');
+  assert.match(elements.get('manifestStats').textContent,/2 valid, 1 filtered out, 1 missing text/);
+  assert(messages.some(message=>message.type==='proofread-updated'&&message.role==='validation'&&message.manifest==='validation.jsonl'));
+  await evaluate("run(()=>changeContext({...context,role:'training',ui_language:'zh_CN'},true))");
+  assert.equal(elements.get('manifestUpdate').textContent,'更新训练清单');
+  assert.equal(elements.get('manifestPath').textContent,'manifest.jsonl');
+  await evaluate("run(()=>changeContext({...context,ui_language:'en_US'},true))");
 
   events.message({origin:'http://untrusted.example',source:parent,data:{type:'proofread-context',directory:'D:/untrusted'}});
   assert.equal(evaluate('pendingContext'),null,'Messages from a different origin must be ignored');
   assert.equal(evaluate("t('saved',{count:1})"),'Saved');
-  console.log('Proofreading frontend: 8 workflow scenarios passed.');
+  console.log('Proofreading frontend: workflow and validation role scenarios passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

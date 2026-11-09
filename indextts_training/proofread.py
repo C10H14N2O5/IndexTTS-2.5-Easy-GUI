@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from .dataset import AUDIO_EXTS
+from .dataset import AUDIO_EXTS, DATASET_LOCK
 
 
 class Conflict(ValueError):
@@ -250,6 +250,7 @@ class ProofreadSession:
         self.library = Library()
         self.project = ""
         self.language = "ZH"
+        self.role = "training"
         self.lock = threading.RLock()
         self.cancel = threading.Event()
         self.last_access = time.monotonic()
@@ -260,7 +261,9 @@ class ProofreadSession:
         return dict(running=False, total=0, completed=0, succeeded=0, skipped=0,
                     failed=0, current="", error="", cancelled=False)
 
-    def select(self, directory, project="", language="ZH"):
+    def select(self, directory, project="", language="ZH", role="training"):
+        if role not in ("training", "validation"):
+            raise ValueError("无效的语料类型 / Invalid dataset role")
         with self.lock:
             if self.job["running"]:
                 raise Conflict("请先停止批量识别 / Stop batch recognition before switching folders")
@@ -268,6 +271,7 @@ class ProofreadSession:
             self.library = candidate
             self.project = str(project or "")
             self.language = str(language or "ZH")
+            self.role = role
             self.job = self._empty_job()
             return self.snapshot()
 
@@ -279,7 +283,7 @@ class ProofreadSession:
     def snapshot(self):
         with self.lock:
             return {**self.library.session(), "token": self.token, "project": self.project,
-                    "language": self.language, "asr": self.asr_status()}
+                    "language": self.language, "role": self.role, "asr": self.asr_status()}
 
     def start_batch(self):
         with self.lock:
@@ -367,13 +371,16 @@ class ProofreadSession:
             return {"id": ident, "text": text, "version": version}
 
     def bound_project(self):
-        from .dataset import load_project
+        from .dataset import load_project, validation_settings
         project = self.project
         if not project or Path(project).name != project or project in (".", "..") or "/" in project or "\\" in project:
             raise ValueError("请先选择并保存项目 / Select and save a project first")
         meta = load_project(project, str(self.root / "training"))
-        source = meta.get("source_folder")
+        dataset = validation_settings(meta) if self.role == "validation" else meta
+        source = dataset.get("source_folder")
         if not source or self.library.directory is None or Path(source).resolve() != self.library.directory:
+            if self.role == "validation":
+                raise ValueError("请先保存项目的验证语料目录 / Save the selected validation folder first")
             raise ValueError("请先保存项目的当前语料目录 / Save the project with the selected source folder first")
         if meta.get("language", "EN") != self.language:
             raise ValueError("请先保存项目的当前语言 / Save the project with the selected language first")
@@ -446,23 +453,25 @@ def create_proofread_router(root, asr_service, training_running=lambda: False):
             library = session.library
             ident = request.query_params.get("id")
             if operation == "session":
-                with library.lock:
-                    library.rescan()
-                result = session.snapshot()
+                with session.lock, session.library.lock:
+                    session.library.rescan()
+                    result = session.snapshot()
             elif operation == "item":
                 result = library.item(ident)
             elif operation == "asr/status":
                 result = session.asr_status()
             elif operation == "manifest/status":
                 from .dataset import dataset_manifest_status
-                try:
-                    project = session.bound_project()
-                    result = dataset_manifest_status(project, root=str(root / "training"))
-                    result["available"] = True
-                except ValueError as exc:
-                    result = {"available": False, "stale": True, "message": str(exc), "manifest": ""}
-                result["training_running"] = bool(training_running())
-                result["asr_running"] = directory_asr_running(library.directory)
+                with session.lock, DATASET_LOCK:
+                    try:
+                        project = session.bound_project()
+                        result = dataset_manifest_status(project, root=str(root / "training"), role=session.role)
+                        result["available"] = True
+                    except ValueError as exc:
+                        result = {"available": False, "stale": True, "message": str(exc), "manifest": ""}
+                    result["role"] = session.role
+                    result["training_running"] = bool(training_running())
+                    result["asr_running"] = directory_asr_running(session.library.directory)
             elif operation == "audio":
                 path = library.path(ident)
                 if path.suffix.lower() not in {".wav", ".mp3", ".ogg", ".flac"}:
@@ -500,7 +509,8 @@ def create_proofread_router(root, asr_service, training_running=lambda: False):
             def dispatch():
                 library = session.library
                 if operation == "select":
-                    return session.select(body.get("directory", ""), body.get("project", ""), body.get("language", "ZH"))
+                    return session.select(body.get("directory", ""), body.get("project", ""),
+                                          body.get("language", "ZH"), body.get("role", "training"))
                 if operation == "save":
                     return library.save(body["id"], body["text"], body["version"], body.get("reviewed") is True)
                 if operation == "review":
@@ -516,14 +526,19 @@ def create_proofread_router(root, asr_service, training_running=lambda: False):
                 if operation == "asr/item":
                     return session.retranscribe(body["id"], body["version"])
                 if operation == "manifest/update":
-                    if training_running():
-                        raise Conflict("训练运行中，不能更新清单 / Stop training before updating the manifest")
-                    if directory_asr_running(library.directory):
-                        raise Conflict("识别运行中，请完成后更新清单 / Finish recognition before updating the manifest")
                     from .dataset import dataset_manifest_status, refresh_project_manifest
-                    project = session.bound_project()
-                    meta = refresh_project_manifest(project, root=str(root / "training"))
-                    return {"meta": meta, "status": dataset_manifest_status(project, root=str(root / "training"))}
+                    with session.lock, DATASET_LOCK:
+                        role = session.role
+                        if body.get("role", role) != role:
+                            raise Conflict("校对语料已切换 / The selected dataset has changed")
+                        if training_running():
+                            raise Conflict("训练运行中，不能更新清单 / Stop training before updating the manifest")
+                        if directory_asr_running(session.library.directory):
+                            raise Conflict("识别运行中，请完成后更新清单 / Finish recognition before updating the manifest")
+                        project = session.bound_project()
+                        meta = refresh_project_manifest(project, root=str(root / "training"), role=role)
+                        status = dataset_manifest_status(project, root=str(root / "training"), role=role)
+                        return {"meta": meta, "status": {**status, "role": role}}
                 raise ValueError("Unknown operation")
             return JSONResponse(await run_in_threadpool(dispatch), headers=headers)
         except Exception as exc:

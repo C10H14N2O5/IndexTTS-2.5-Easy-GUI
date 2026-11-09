@@ -86,6 +86,9 @@ class GuiI18n:
                 for literal, field, spec, conversion in _FORMATTER.parse(self.translations.get(source, source)):
                     result.append(literal)
                     if field is not None:
-                        result.append(match.group(f"p{field}"))
+                        value = match.group(f"p{field}")
+                        if source == "Training failed: {0}: {1}" and field == "1":
+                            value = self.backend_message(value)
+                        result.append(value)
                 return "".join(result)
         return text

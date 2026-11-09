@@ -15,27 +15,33 @@ def _play_done_sound():
 class TrainingManager:
     def __init__(self):
         self.lock=threading.RLock(); self.thread=None; self.stop_event=threading.Event(); self.tensorboard=None; self.tensorboard_logdir=None
-        self.state={'running':False,'step':0,'total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':''}
+        self.state={'running':False,'failed':False,'step':0,'total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':''}
     def _update(self,**kw):
         with self.lock: self.state.update({k:v for k,v in kw.items() if v is not None})
     def snapshot(self):
         with self.lock: return dict(self.state)
     def start(self,config):
-        from .dataset import DATASET_LOCK, load_project, validate_project_manifest
+        from .dataset import DATASET_LOCK, load_project, validate_project_manifest, validate_validation_manifest
         from .proofread import directory_lock
-        from contextlib import nullcontext
         with DATASET_LOCK:
             training_root = config.get('training_root', 'training')
             project = load_project(config.get('project'), training_root)
-            source = project.get('source_folder')
-            with directory_lock(source) if source else nullcontext():
+            with directory_lock(project.get('source_folder')):
                 validate_project_manifest(config.get('project'), config['manifest'], training_root)
-                return self._start_locked(config)
+                run_config = dict(config)
+                overrides = {}
+                if 'validation_enabled' in run_config:
+                    overrides['enabled'] = run_config.pop('validation_enabled')
+                if 'validation_interval_steps' in run_config:
+                    overrides['interval_steps'] = run_config.pop('validation_interval_steps')
+                run_config['validation'] = validate_validation_manifest(
+                    config.get('project'), config['manifest'], training_root, **overrides)
+                return self._start_locked(run_config)
     def _start_locked(self,config):
         if self.thread and self.thread.is_alive(): raise RuntimeError('Training is already running.')
         from .activity import acquire, release
         activity_token = acquire('training')
-        self.stop_event.clear(); self._update(running=True,step=0,total=0,message='Starting experimental LoRA training…',output='')
+        self.stop_event.clear(); self._update(running=True,failed=False,step=0,total=0,message='Starting experimental LoRA training…',output='')
         def worker():
             try:
                 # Keep the GUI and dataset-preparation tab usable when the
@@ -44,7 +50,7 @@ class TrainingManager:
                 result=train_lora(config,self._update,self.stop_event)
                 self._update(running=False,output=result.get('output',''),message='Training stopped.' if result.get('stopped') else 'Training complete.'); _play_done_sound()
             except Exception as exc:
-                import traceback; traceback.print_exc(); self._update(running=False,message=f'Training failed: {type(exc).__name__}: {exc}')
+                import traceback; traceback.print_exc(); self._update(running=False,failed=True,message=f'Training failed: {type(exc).__name__}: {exc}')
                 # A failed CUDA step can otherwise leave the large GPT/Whisper
                 # teacher cached in the GUI process, making the next retry
                 # fail with an unrelated out-of-memory error.
@@ -57,6 +63,15 @@ class TrainingManager:
             finally:
                 release(activity_token)
         try:
+            if config.get('output_dir'):
+                from .dataset import _atomic_write
+                saved = dict(config)
+                if config.get('validation'):
+                    saved['validation'] = {key: value for key, value in config['validation'].items()
+                                           if key != 'rows'}
+                    saved['validation']['samples'] = len(config['validation']['rows'])
+                _atomic_write(Path(config['output_dir']) / 'training_config.json',
+                              json.dumps(saved, indent=2).encode('utf-8'))
             self.thread=threading.Thread(target=worker,daemon=True)
             self.thread.start()
         except Exception:

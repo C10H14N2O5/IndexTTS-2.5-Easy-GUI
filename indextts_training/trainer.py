@@ -1,6 +1,7 @@
 from __future__ import annotations
 import functools
 import ctypes
+import hashlib
 import json, math, os, re, time, shutil, subprocess, unicodedata
 import threading
 from pathlib import Path
@@ -186,8 +187,11 @@ def _phonetic_target(text, language, device):
     return torch.tensor(ids, dtype=torch.long, device=device)
 
 
-def _read_manifest(path):
-    return [json.loads(x) for x in Path(path).read_text(encoding='utf-8').splitlines() if x.strip()]
+def _read_manifest(path, fingerprint=None):
+    data = Path(path).read_bytes()
+    if fingerprint and hashlib.sha256(data).hexdigest() != fingerprint:
+        raise RuntimeError('Training manifest changed after validation preflight. Start training again.')
+    return [json.loads(line) for line in data.decode('utf-8-sig').splitlines() if line.strip()]
 
 def _safe_audio(path, sr=16000, max_seconds=15.0):
     try:
@@ -513,6 +517,37 @@ def _loss(tts,text,reference_text,spk,emo,codes,lang_id,phonetic_target,semantic
     return total, mel_loss, text_loss, phonetic_loss, asr_loss
 
 
+def _acoustic_sample_loss(tts, item, device):
+    text, reference_text, spk, emo, codes, lang_id, phonetic_target, *_ = _prepare_sample(
+        tts, item, device, include_auxiliary_conditioning=False,
+    )
+    with torch.autocast('cuda', dtype=torch.bfloat16):
+        total, mel, *_ = _loss(tts, text, reference_text, spk, emo, codes, lang_id, phonetic_target)
+    return total, mel
+
+
+def _validation_loss(tts, rows, device, step, stop_event):
+    adapter = tts.gpt.gpt
+    was_training = adapter.training
+    total = 0.0
+    try:
+        adapter.eval()
+        with torch.no_grad():
+            for item in rows:
+                if stop_event.is_set():
+                    return None
+                try:
+                    loss, _ = _acoustic_sample_loss(tts, item, device)
+                    value = float(loss.float().item())
+                    if not math.isfinite(value):
+                        raise ValueError(f'Non-finite validation loss: {value}')
+                except Exception as exc:
+                    raise RuntimeError(f'Validation failed at step {step} for {item["audio"]}: {exc}') from exc
+                total += value
+    finally:
+        adapter.train(was_training)
+    return None if stop_event.is_set() else total / len(rows)
+
 
 def _generate_eval(tts, config, step, out_dir, writer=None):
     if not config.get('eval_enabled') or not config.get('eval_text') or not config.get('eval_reference'):
@@ -577,8 +612,17 @@ def train_lora(config, callback, stop_event):
     from peft import LoraConfig, get_peft_model, PeftModel
     from torch.utils.tensorboard import SummaryWriter
     from indextts.infer_v2_5 import IndexTTS2
-    rows=_read_manifest(config['manifest']);
-    if not rows: raise RuntimeError('Prepared manifest is empty.')
+    validation = config.get('validation')
+    rows = _read_manifest(config['manifest'], validation.get('training_fingerprint') if validation else None)
+    if not rows:
+        raise RuntimeError('Prepared manifest is empty.')
+    validation_rows = tuple(dict(row) for row in validation['rows']) if validation else ()
+    if validation and not validation_rows:
+        raise RuntimeError('Validation manifest is empty.')
+    validation_interval = validation.get('interval_steps') if validation else None
+    saved_config = dict(config)
+    if validation:
+        saved_config['validation'] = {key: value for key, value in validation.items() if key != 'rows'}
     if not torch.cuda.is_available():
         raise RuntimeError('IndexTTS 2.5 LoRA training requires an NVIDIA CUDA device.')
     seed=int(config.get('seed',1234)); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
@@ -591,9 +635,6 @@ def train_lora(config, callback, stop_event):
     # receives its target transcript as the normal TTS conditioning input, but
     # the optional auxiliary text-token, reference-transcript, phonetic-CTC,
     # CFM/S2Mel and Whisper objectives are intentionally disabled.
-    semantic_weight=0.0
-    reference_text_conditioning=False
-    asr_model=None
     callback(message='Using native acoustic LoRA objective; auxiliary text/ASR losses disabled.')
     # Only the autoregressive GPT transformer receives trainable LoRA parameters.
     # The remaining IndexTTS modules stay frozen.
@@ -626,7 +667,6 @@ def train_lora(config, callback, stop_event):
             raise RuntimeError(f'Resumed adapter at {resume} has no trainable parameters.')
         callback(message=f'Resumed LoRA trainable parameters: {sum(parameter.numel() for parameter in trainable):,}')
         opt=torch.optim.AdamW(trainable,lr=float(config['lr']),betas=(0.9,0.95),eps=1e-8,weight_decay=0.01)
-    writer=SummaryWriter(str(out/'tensorboard'))
     micro=max(1,int(config['batch'])); accum=max(1,int(config['grad_accum'])); clip=float(config['grad_clip'])
     updates_per_epoch=max(1,math.ceil(len(rows)/(micro*accum)))
     total=int(config['steps']) if config['mode']=='Steps' else int(config['epochs'])*updates_per_epoch
@@ -645,60 +685,81 @@ def train_lora(config, callback, stop_event):
             st=torch.load(state,map_location='cpu'); start_step=int(st.get('step',0)); opt.load_state_dict(st['optimizer']); sched.load_state_dict(st['scheduler'])
     opt.zero_grad(set_to_none=True); started=time.time(); ema=None; step=start_step; cursor=(start_step*micro*accum)%len(rows)
     save_every=max(1,int(config['save_every']))
-    while step<total and not stop_event.is_set():
-        running_loss=0.0; running_mel=0.0; seen=0
-        for ga in range(accum):
-            for mb in range(micro):
+
+    def save_adapter(directory, saved_step):
+        directory.mkdir(parents=True, exist_ok=True)
+        tts.gpt.gpt.save_pretrained(str(directory), safe_serialization=True)
+        torch.save({'step': saved_step, 'optimizer': opt.state_dict(),
+                    'scheduler': sched.state_dict(), 'config': saved_config}, directory/'trainer_state.pt')
+
+    # A resume from an earlier checkpoint can replay previously logged steps.
+    # Retain the checkpoint's metrics and hide later events before appending.
+    purge_step = start_step + 1 if validation_rows and start_step else None
+    with SummaryWriter(str(out/'tensorboard'), purge_step=purge_step) as writer:
+        if validation_rows:
+            writer.add_custom_scalars({'Loss': {'Training and validation': [
+                'Multiline', ['train/loss_ema', 'validation/loss'],
+            ]}})
+            writer.add_text('validation/dataset',
+                            f'SHA-256: `{validation["fingerprint"]}`\n\nSamples: {len(validation_rows)}', start_step)
+        while step<total and not stop_event.is_set():
+            running_loss=0.0; running_mel=0.0; seen=0
+            for ga in range(accum):
+                for mb in range(micro):
+                    if stop_event.is_set(): break
+                    item=rows[cursor%len(rows)]; cursor+=1
+                    sample_loss, mel_loss = _acoustic_sample_loss(tts, item, device)
+                    if not torch.isfinite(sample_loss):
+                        raise RuntimeError(f'Non-finite LoRA loss detected at step {step + 1}: {float(sample_loss.detach().float())}')
+                    (sample_loss / (micro * accum)).backward()
+                    running_loss+=float(sample_loss.detach().float().item())
+                    running_mel+=float(mel_loss.detach().float().item())
+                    seen+=1
                 if stop_event.is_set(): break
-                item=rows[cursor%len(rows)]; cursor+=1
-                (
-                    text,reference_text,spk,emo,codes,lang_id,phonetic_target,
-                    s2mel_prompt,ref_mel,style,target_text,
-                )=_prepare_sample(tts,item,device,include_auxiliary_conditioning=False)
-                with torch.autocast('cuda',dtype=torch.bfloat16,enabled=True):
-                    sample_loss,mel_loss,text_loss,phonetic_loss,asr_loss=_loss(
-                        tts,text,reference_text,spk,emo,codes,lang_id,phonetic_target,
-                        semantic_weight=semantic_weight,
-                        reference_text_conditioning=reference_text_conditioning,
-                        phonetic_weight=0.0,
-                        phonetic_temperature=1.0,
-                        asr_model=None,
-                        asr_weight=0.0,
-                        asr_language=str(config.get('language','ES')).lower(),
-                        asr_cfm_steps=int(config.get('asr_cfm_steps',4)),
-                        asr_temperature=float(config.get('asr_cfm_temperature',1.0)),
-                        s2mel_prompt=s2mel_prompt,ref_mel=ref_mel,style=style,target_text=target_text,
-                    )
-                    loss=sample_loss/(micro*accum)
-                if not torch.isfinite(sample_loss):
-                    raise RuntimeError(f'Non-finite LoRA loss detected at step {step + 1}: {float(sample_loss.detach().float())}')
-                loss.backward()
-                running_loss+=float(sample_loss.detach().float().item())
-                running_mel+=float(mel_loss.detach().float().item())
-                seen+=1
-            if stop_event.is_set(): break
-        if not seen or stop_event.is_set(): break
-        grad_norm=torch.nn.utils.clip_grad_norm_(trainable,clip)
-        if not torch.isfinite(grad_norm):
-            raise RuntimeError(f'Non-finite gradient norm detected at step {step + 1}: {float(grad_norm.detach().float())}')
-        opt.step(); sched.step(); opt.zero_grad(set_to_none=True)
-        raw=running_loss/seen; mel_raw=running_mel/seen
-        ema=raw if ema is None else .95*ema+.05*raw; step+=1
-        elapsed=time.time()-started; rate=(step-start_step)/max(elapsed,1e-6); eta=(total-step)/max(rate,1e-6)
-        epoch=math.ceil(step/updates_per_epoch)
-        current_lr=opt.param_groups[0]['lr']
-        writer.add_scalar('train/loss_ema',ema,step); writer.add_scalar('train_raw/loss',raw,step); writer.add_scalar('train/lr',current_lr,step)
-        writer.add_scalar('train/mel_loss',mel_raw,step)
-        writer.add_scalar('train/grad_norm',float(grad_norm),step); writer.flush()
-        writer.add_scalar('train/epoch',epoch,step)
-        callback(step=step,total=total,epoch=epoch,loss=ema,elapsed=elapsed,eta=eta,message=f'Training step {step}/{total} | epoch {epoch} | lr {current_lr:.2e}')
-        if step%save_every==0 or step==total:
-            ck=out/f'checkpoint-step-{step:06d}'; ck.mkdir(parents=True,exist_ok=True); tts.gpt.gpt.save_pretrained(str(ck),safe_serialization=True)
-            torch.save({'step':step,'optimizer':opt.state_dict(),'scheduler':sched.state_dict(),'config':config},ck/'trainer_state.pt')
-            eval_wav=_generate_eval(tts,config,step,out,writer)
+            if not seen or stop_event.is_set(): break
+            grad_norm=torch.nn.utils.clip_grad_norm_(trainable,clip)
+            if not torch.isfinite(grad_norm):
+                raise RuntimeError(f'Non-finite gradient norm detected at step {step + 1}: {float(grad_norm.detach().float())}')
+            opt.step(); sched.step(); opt.zero_grad(set_to_none=True)
+            raw=running_loss/seen; mel_raw=running_mel/seen
+            ema=raw if ema is None else .95*ema+.05*raw; step+=1
+            elapsed=time.time()-started; rate=(step-start_step)/max(elapsed,1e-6); eta=(total-step)/max(rate,1e-6)
+            epoch=math.ceil(step/updates_per_epoch)
+            current_lr=opt.param_groups[0]['lr']
+            writer.add_scalar('train/loss_ema',ema,step); writer.add_scalar('train_raw/loss',raw,step); writer.add_scalar('train/lr',current_lr,step)
+            writer.add_scalar('train/mel_loss',mel_raw,step)
+            writer.add_scalar('train/grad_norm',float(grad_norm),step)
+            writer.add_scalar('train/epoch',epoch,step)
             writer.flush()
-            callback(message=f'Saved checkpoint: {ck.name}' + (f' | Eval: {Path(eval_wav).name}' if eval_wav else ''))
-    final=out/'final_adapter'; final.mkdir(parents=True,exist_ok=True); tts.gpt.gpt.save_pretrained(str(final),safe_serialization=True)
-    torch.save({'step':step,'optimizer':opt.state_dict(),'scheduler':sched.state_dict(),'config':config},final/'trainer_state.pt')
-    writer.close(); del asr_model; del tts; torch.cuda.empty_cache()
+            callback(step=step,total=total,epoch=epoch,loss=ema,elapsed=elapsed,eta=eta,message=f'Training step {step}/{total} | epoch {epoch} | lr {current_lr:.2e}')
+
+            checkpoint = out / f'checkpoint-step-{step:06d}'
+            checkpoint_due = step % save_every == 0 or step == total
+            if checkpoint_due:
+                save_adapter(checkpoint, step)
+
+            if validation_rows and (step % (validation_interval or save_every) == 0 or step == total):
+                callback(message=f'Running validation at step {step}…')
+                try:
+                    validation_loss = _validation_loss(tts, validation_rows, device, step, stop_event)
+                except Exception as exc:
+                    if not checkpoint_due:
+                        try:
+                            save_adapter(checkpoint, step)
+                        except Exception as save_exc:
+                            raise RuntimeError(f'Validation failed at step {step}; checkpoint save also failed: {save_exc}') from exc
+                    raise
+                if validation_loss is None:
+                    break
+                writer.add_scalar('validation/loss', validation_loss, step)
+                writer.flush()
+                callback(message=f'Validation loss at step {step}: {validation_loss:.6f}')
+
+            if checkpoint_due:
+                eval_wav=_generate_eval(tts,config,step,out,writer)
+                writer.flush()
+                callback(message=f'Saved checkpoint: {checkpoint.name}' + (f' | Eval: {Path(eval_wav).name}' if eval_wav else ''))
+        final = out / 'final_adapter'
+        save_adapter(final, step)
+    del tts; torch.cuda.empty_cache()
     return {'step':step,'total':total,'output':str(final),'stopped':stop_event.is_set()}
