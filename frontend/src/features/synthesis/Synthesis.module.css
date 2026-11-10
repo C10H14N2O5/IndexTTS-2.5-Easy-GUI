@@ -1,5 +1,7 @@
 .page { max-width: var(--content-max); margin: 0 auto; display: grid; gap: var(--space-5); }
-.layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); align-items: start; gap: var(--gutter); }
+.layout { display: grid; grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr)); align-items: start; column-gap: var(--grid-gutter); row-gap: var(--space-5); }
+.layout > :first-child { grid-column: span 8; }
+.layout > :last-child { grid-column: span 4; }
 .stack { display: grid; gap: var(--space-5); min-width: 0; }
 .fields { display: grid; gap: var(--space-4); }
 .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
@@ -18,4 +20,4 @@
 .historyName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--type-label); max-width: 100%; }
 .job { display: grid; gap: var(--space-3); }
 .jobHeading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-@media (max-width: 1150px) { .layout { grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr); } .two { gap: var(--space-4); } }
+@media (max-width: 1365px) { .layout > :first-child { grid-column: span 7; } .layout > :last-child { grid-column: span 5; } .two { gap: var(--space-4); } }

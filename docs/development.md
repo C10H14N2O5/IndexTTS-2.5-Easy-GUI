@@ -63,6 +63,10 @@ pnpm --dir frontend dev
 
 共享 UI 位于 [`frontend/src/ui/`](../frontend/src/ui/)，样式变量位于 [`frontend/src/styles/tokens.css`](../frontend/src/styles/tokens.css)。最低宽度 1024px，侧栏宽度 240px，1280px 以下折叠为 64px；尊重 `prefers-reduced-motion`，支持明暗主题和键盘操作。耗时动作需有 pending/禁用原因/进度/错误/完成反馈，不以控制台作为唯一反馈渠道。
 
+排版使用 `--content-max` 内的 12 栏文字网格（`--grid-columns`、`--grid-gutter`）。页面统一使用 `PageHeader`：所属导航分组由 `AppShell` 通过 `PageEyebrow` 提供，标题/导语占 1–8 栏，操作按钮占 9–12 栏。`Section` 默认 `layout="tile"`（浅灰圆角块，用于合成、校对、训练等工作区）；设置和说明型内容使用 `layout="aside"`（细线分隔，标题列 1–4 栏、内容 5–12 栏，1200px 以下上下堆叠）。新增页面的分栏也应落在 12 栏上，例如 8/4 或 7/5。
+
+页面过渡由 `ui/Motion.tsx` 的 `RouteTransition` 负责：`scope` 改变时用 Web Animations API 播放 220ms 淡入上移，不使用 `key`，因此不会重新挂载子组件或丢失草稿。`AppShell` 以页面路径为 scope（项目工作台整体视为一页），`ProjectLayout` 以标签页为 scope。减少动态效果或不支持该 API 时直接跳过。
+
 ## 安全边界
 
 这是可信本机/局域网工具，不包含账户鉴权；**不要直接暴露到公网**。文件浏览器是服务端文件浏览器，不是浏览器客户端磁盘。媒体接口只允许业务白名单路径；上传有 200 MiB 内容上限，外层请求体也限流，临时上传启动时及下次上传时清理 24 小时前的文件。

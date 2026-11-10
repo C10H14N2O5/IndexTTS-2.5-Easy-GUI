@@ -46,9 +46,8 @@ export default function SystemPage() {
     <PageHeader title={t('System')} description={t('A clear view of your runtime, preferences, and local storage.')} actions={<Button variant="text" icon={RefreshCw} pending={status.isFetching} onClick={() => { void status.refetch(); void bootstrap.refetch(); }}>{t('Refresh status')}</Button>} />
     {system.fake_engine && <InlineAlert tone="info" title={t('Demo engine is active')}>{t('Audio and training are simulated. No production model or GPU is required in this mode.')}</InlineAlert>}
     {update.error && <InlineAlert tone="error" title={t('Settings could not be saved')}>{errorMessage(update.error)}</InlineAlert>}
-    <div className={styles.columns}>
-      <div className={styles.stack}>
-        <Section title={t('Model and device')} actions={<Badge tone={system.model.loaded ? 'success' : 'neutral'}>{system.model.loaded ? t('Loaded') : t('Not loaded')}</Badge>}>
+    <div className={styles.sections}>
+        <Section layout="aside" title={t('Model and device')} actions={<Badge tone={system.model.loaded ? 'success' : 'neutral'}>{system.model.loaded ? t('Loaded') : t('Not loaded')}</Badge>}>
           <div className={styles.fields}>
             {!system.model_present && !system.fake_engine && <InlineAlert tone="warning" title={t('Model files are missing')}>{t('Place the IndexTTS model files in the model directory before synthesizing.')}</InlineAlert>}
             <KeyValueList items={[{ label: t('Application version'), value: bootstrap.data?.version }, { label: t('Model directory'), value: system.model_dir }, { label: t('Active adapter'), value: system.model.adapter || t('Original model') }, { label: t('CUDA device'), value: cuda?.device || t('No CUDA device detected') }, { label: t('PyTorch version'), value: cuda?.torch ?? '—' }, { label: t('CUDA version'), value: cuda?.cuda ?? '—' }]} />
@@ -60,7 +59,7 @@ export default function SystemPage() {
             {status.error && <InlineAlert tone="error">{errorMessage(status.error)}</InlineAlert>}
           </div>
         </Section>
-        <Section title={t('Runtime acceleration')} description={t('Changes apply when the model is next loaded. Unsupported options cannot be enabled.')}>
+        <Section layout="aside" title={t('Runtime acceleration')} description={t('Changes apply when the model is next loaded. Unsupported options cannot be enabled.')}>
           <div className={styles.fields}>
             <Switch checked={settings.use_bf16} onCheckedChange={(value) => save({ use_bf16: value })} label={t('BF16 precision')} description={t('Reduce memory use with bfloat16 inference.')} disabled={update.isPending} disabledReason={settings.use_flash_accel ? t('FlashAttention requires BF16. Turn off FlashAttention first.') : undefined} />
             <Switch checked={settings.use_gpt_latent} onCheckedChange={(value) => save({ use_gpt_latent: value })} label={t('GPT latent path')} description={t('Use the IndexTTS GPT latent path with the bundled temporal-alignment fix.')} disabled={update.isPending} />
@@ -68,13 +67,11 @@ export default function SystemPage() {
             <Switch checked={settings.use_flash_accel} onCheckedChange={(value) => save({ use_flash_accel: value })} label={t('Flash attention')} description={t('Use the optional FlashAttention acceleration package.')} disabled={update.isPending} disabledReason={!capabilities?.triton.ok ? capabilities?.triton.detail || t('Triton is unavailable.') : !capabilities?.flash_attn.ok ? capabilities?.flash_attn.detail || t('FlashAttention is unavailable.') : undefined} />
           </div>
         </Section>
-      </div>
-      <div className={styles.stack}>
-        <Section title={t('Appearance and language')}><div className={styles.fields}>
+        <Section layout="aside" title={t('Appearance and language')}><div className={styles.fields}>
           <Field label={t('Interface language')}><Select aria-label={t('Interface language')} value={settings.ui_language} onChange={(value) => save({ ui_language: value })} disabled={update.isPending} options={[{ value: 'zh_CN', label: '简体中文' }, { value: 'en_US', label: 'English' }]} /></Field>
           <Field label={t('Theme')}><SegmentedControl value={settings.theme} onChange={(value) => { if (!update.isPending) save({ theme: value }); }} options={[{ value: 'system', label: t('Follow system') }, { value: 'light', label: t('Light') }, { value: 'dark', label: t('Dark') }]} /></Field>
         </div></Section>
-        <Section title={t('Completion feedback')}><div className={styles.fields}>
+        <Section layout="aside" title={t('Completion feedback')}><div className={styles.fields}>
           <Switch checked={settings.completion_sound} onCheckedChange={(value) => { if (value) void unlockCompletionSound().catch(() => {}); save({ completion_sound: value }); }} label={t('Completion sound')} description={t('Play a short chime when a task finishes successfully.')} disabled={update.isPending} />
           <Button variant="text" size="sm" icon={Volume2} onClick={async () => { try { await unlockCompletionSound(); await playCompletionSound(); } catch (error) { toast.error(errorMessage(error)); } }}>{t('Test sound')}</Button>
           <Switch checked={settings.notifications && permission === 'granted'} onCheckedChange={(value) => void enableNotifications(value)} label={t('Browser notifications')} description={t('Notify you when work finishes while this tab is in the background.')} disabled={update.isPending || permissionPending} disabledReason={!notificationsAvailable() ? t('Notifications require HTTPS or localhost and a supported browser.') : undefined} />
@@ -82,11 +79,10 @@ export default function SystemPage() {
           {notificationError && <InlineAlert tone="warning">{notificationError}</InlineAlert>}
           <p className={styles.caption}>{t('Sound and notifications are handled by this browser, not by the server.')}</p>
         </div></Section>
-        <Section title={t('Local storage cleanup')} description={t('These actions permanently remove local files. Review the confirmation carefully.')}>
+        <Section layout="aside" title={t('Local storage cleanup')} description={t('These actions permanently remove local files. Review the confirmation carefully.')}>
           <div className={styles.danger}><div><h3 className={styles.dangerTitle}>{t('Output recordings')}</h3><p className={styles.caption}>{t('Clear saved synthesis and dialogue audio.')}</p></div><Button variant="danger" size="sm" disabledReason={gpu ? t('Wait for the active synthesis to finish.') : undefined} onClick={() => setConfirm('outputs')}>{t('Delete outputs')}</Button></div>
           <div className={styles.danger}><div><h3 className={styles.dangerTitle}>{t('Reference voices')}</h3><p className={styles.caption}>{t('Clear reference audio and transcripts.')}</p></div><Button variant="danger" size="sm" disabledReason={gpu ? t('Wait for the active synthesis to finish.') : undefined} onClick={() => setConfirm('voices')}>{t('Delete all voices')}</Button></div>
         </Section>
-      </div>
     </div>
     <ConfirmDialog open={Boolean(confirm)} onOpenChange={(open) => { if (!open) setConfirm(null); }} title={confirm ? titles[confirm] : ''} description={confirm ? descriptions[confirm] : ''} confirmLabel={confirm === 'unload' ? t('Unload models') : t('Delete permanently')} tone={confirm === 'unload' ? 'default' : 'danger'} requireText={confirm && confirm !== 'unload' ? 'DELETE' : undefined} onConfirm={async () => { if (confirm) await danger.mutateAsync(confirm); setConfirm(null); }} />
   </div>;

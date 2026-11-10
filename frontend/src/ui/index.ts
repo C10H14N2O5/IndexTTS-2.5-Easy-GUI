@@ -7,3 +7,4 @@ export * from './Audio';
 export * from './FileBrowser';
 export * from './LogConsole';
 export * from './LineChart';
+export * from './Motion';

@@ -8,7 +8,17 @@
   --font-sans: 'Inter Variable', 'Microsoft YaHei UI', 'PingFang SC', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', ui-monospace, monospace;
 
-  --type-display: 600 34px/40px var(--font-sans);
+  /*
+   * Typographic hierarchy (apple.com.cn proportions): eyebrow → display →
+   * lede for page headers, section → intro for section headers. Controls keep
+   * the compact body/label/caption sizes.
+   */
+  --type-eyebrow: 600 14px/20px var(--font-sans);
+  --type-display: 600 48px/52px var(--font-sans);
+  --type-lede: 400 21px/30px var(--font-sans);
+  --type-section: 600 24px/30px var(--font-sans);
+  --type-intro: 400 17px/25px var(--font-sans);
+  --type-stat: 600 28px/32px var(--font-sans);
   --type-title: 600 24px/32px var(--font-sans);
   --type-headline: 600 19px/26px var(--font-sans);
   --type-body: 400 15px/24px var(--font-sans);
@@ -16,8 +26,8 @@
   --type-label: 500 13px/18px var(--font-sans);
   --type-caption: 400 12px/16px var(--font-sans);
   --type-mono: 400 12.5px/18px var(--font-mono);
-  --tracking-display: -0.022em;
-  --tracking-title: -0.015em;
+  --tracking-display: -0.015em;
+  --tracking-title: -0.01em;
 
   /* Spacing scale */
   --space-1: 4px;
@@ -29,13 +39,15 @@
   --space-7: 48px;
   --space-8: 64px;
 
-  /* Layout */
+  /* Layout: a 12-column text grid inside --content-max; vertical rhythm in 8px steps. */
   --content-max: 1200px;
-  --gutter: 24px;
+  --grid-columns: 12;
+  --grid-gutter: 24px;
+  --gutter: var(--grid-gutter);
   --page-margin: 32px;
   --sidebar-width: 240px;
   --sidebar-collapsed: 64px;
-  --topbar-height: 56px;
+  --topbar-height: 48px;
   --control-height: 40px;
   --control-height-compact: 32px;
 
@@ -52,6 +64,8 @@
   --duration-medium: 200ms;
   --duration-long: 300ms;
   --duration-emphasized: 400ms;
+  --duration-page: 220ms;
+  --page-shift: 8px;
 
   /* State layer opacities */
   --state-hover: 8%;
@@ -82,7 +96,9 @@
   --color-text-3: #6e6e73;
   --color-separator: #d2d2d7;
   --color-separator-soft: #e8e8ed;
+  --color-rule: #d2d2d7;
   --color-accent: #0071e3;
+  --color-link: #0066cc;
   --color-on-accent: #ffffff;
   --color-on-error: #ffffff;
   --color-success: #248a3d;
@@ -104,7 +120,9 @@
   --color-text-3: #96969b;
   --color-separator: #38383a;
   --color-separator-soft: #2c2c2e;
+  --color-rule: #424245;
   --color-accent: #2997ff;
+  --color-link: #2997ff;
   --color-on-accent: #001b36;
   --color-on-error: #240000;
   --color-success: #30d158;
@@ -122,5 +140,13 @@
     --duration-medium: 0ms;
     --duration-long: 0ms;
     --duration-emphasized: 0ms;
+    --duration-page: 0ms;
+    --page-shift: 0px;
+  }
+}
+
+@media (max-width: 1279px) {
+  :root {
+    --type-display: 600 40px/44px var(--font-sans);
   }
 }

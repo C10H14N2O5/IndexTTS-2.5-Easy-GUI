@@ -1,6 +1,5 @@
 .page { max-width: var(--content-max); margin: auto; display: grid; gap: var(--space-5); }
-.columns { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gutter); align-items: start; }
-.stack { display: grid; gap: var(--space-5); }
+.sections { display: grid; min-width: 0; }
 .fields { display: grid; gap: var(--space-4); }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5); }

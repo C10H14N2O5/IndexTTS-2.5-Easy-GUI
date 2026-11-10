@@ -1,13 +1,26 @@
-import { type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router';
-import { ArrowLeft, Check, Circle, CircleAlert, Info, TriangleAlert, type LucideIcon } from 'lucide-react';
+import { Check, ChevronLeft, Circle, CircleAlert, Info, TriangleAlert, type LucideIcon } from 'lucide-react';
 import clsx from 'clsx';
 import { Progress } from 'radix-ui';
 import s from './Kit.module.css';
 
 export type Tone='neutral'|'accent'|'success'|'warning'|'error';
-export function PageHeader({title,description,actions,back}:{title:ReactNode;description?:ReactNode;actions?:ReactNode;back?:{to:string;label:string}}){return <header className={s.pageHeader}>{back&&<Link to={back.to} className={s.back}><ArrowLeft size={15}/>{back.label}</Link>}<div className={s.headerRow}><div><h1>{title}</h1>{description&&<p className={s.pageDescription}>{description}</p>}</div>{actions&&<div className={s.actions}>{actions}</div>}</div></header>;}
-export function Section({title,description,actions,children,id,className}:{title?:ReactNode;description?:ReactNode;actions?:ReactNode;children:ReactNode;id?:string;className?:string}){return <section id={id} className={clsx(s.section,className)}>{(title||description||actions)&&<div className={s.sectionHeader}><div>{title&&<h2>{title}</h2>}{description&&<p className={s.hint}>{description}</p>}</div>{actions&&<div className={s.actions}>{actions}</div>}</div>}<div className={s.sectionBody}>{children}</div></section>;}
+const EyebrowContext=createContext<ReactNode>(undefined);
+/** Supplies the default eyebrow (the current navigation group) to page headers. */
+export function PageEyebrow({value,children}:{value:ReactNode;children:ReactNode}){return <EyebrowContext.Provider value={value}>{children}</EyebrowContext.Provider>;}
+/**
+ * Page header on the 12-column text grid: eyebrow row (always reserved so titles
+ * share one vertical position), display title and lede in columns 1–8, actions in
+ * columns 9–12 aligned to the title. A back link takes the eyebrow's place.
+ */
+export function PageHeader({title,description,actions,back,eyebrow}:{title:ReactNode;description?:ReactNode;actions?:ReactNode;back?:{to:string;label:string};eyebrow?:ReactNode}){const inherited=useContext(EyebrowContext);const label=eyebrow??inherited;return <header className={s.pageHeader}><div className={s.eyebrowRow}>{back?<Link to={back.to} className={s.back}><ChevronLeft size={16} aria-hidden/>{back.label}</Link>:label?<p className={s.eyebrow}>{label}</p>:null}</div><h1 className={s.pageTitle}>{title}</h1>{actions&&<div className={s.headerActions}>{actions}</div>}{description&&<p className={s.pageDescription}>{description}</p>}</header>;}
+/**
+ * `tile` (default) is an Apple-style grey block for workspaces. `aside` is a Swiss
+ * section: a hairline rule, the heading column on grid columns 1–4 and the content on
+ * columns 5–12; it stacks below 1200px.
+ */
+export function Section({title,description,actions,children,id,className,layout='tile'}:{title?:ReactNode;description?:ReactNode;actions?:ReactNode;children:ReactNode;id?:string;className?:string;layout?:'tile'|'aside'}){const aside=layout==='aside';return <section id={id} className={clsx(aside?s.asideSection:s.section,className)} data-layout={layout}>{(aside||title||description||actions)&&<div className={s.sectionHeader}><div>{title&&<h2>{title}</h2>}{description&&<p className={s.sectionIntro}>{description}</p>}</div>{actions&&<div className={s.actions}>{actions}</div>}</div>}<div className={s.sectionBody}>{children}</div></section>;}
 export function ProgressBar({value,tone='accent',label,size='md'}:{value:number|null;tone?:Tone;label?:string;size?:'sm'|'md'}){const clamped=value===null?null:Math.min(1,Math.max(0,value));return <Progress.Root value={clamped===null?null:clamped*100} max={100} aria-label={label} className={clsx(s.progress,s[tone],size==='sm'&&s.progressSmall)}><Progress.Indicator className={clsx(s.progressIndicator,clamped===null&&s.indeterminate)} style={clamped===null?undefined:{transform:`translateX(-${100-clamped*100}%)`}}/></Progress.Root>;}
 export function Skeleton({width='100%',height=20,radius=8}:{width?:CSSProperties['width'];height?:CSSProperties['height'];radius?:number}){return <div aria-hidden className={s.skeleton} style={{width,height,borderRadius:radius}}/>;}
 export function Badge({tone='neutral',children,icon:Icon}:{tone?:Tone;children:ReactNode;icon?:LucideIcon}){return <span className={clsx(s.badge,s[tone])}>{Icon&&<Icon size={13}/>} {children}</span>;}

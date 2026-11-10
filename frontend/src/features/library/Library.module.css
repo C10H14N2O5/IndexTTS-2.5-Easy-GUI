@@ -1,6 +1,10 @@
 .page { max-width: var(--content-max); margin: auto; display: grid; gap: var(--space-5); }
+.page > [role='radiogroup'] { justify-self: start; }
 .stack { display: grid; gap: var(--space-4); }
-.layout { display: grid; grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr); gap: var(--gutter); align-items: start; }
+.layout { display: grid; grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr)); column-gap: var(--grid-gutter); align-items: start; }
+.layout > * { grid-column: span 8; min-width: 0; }
+.layout > :first-child { grid-column: span 4; }
+@media (max-width: 1199px) { .layout > * { grid-column: span 7; } .layout > :first-child { grid-column: span 5; } }
 .row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); }
 .list { display: grid; gap: var(--space-2); max-height: 640px; overflow: auto; }

@@ -10,6 +10,8 @@ import { getToasts, toast } from './toast';
 import { AudioInput } from './Audio';
 import { FileBrowserDialog } from './FileBrowser';
 import { LogConsole } from './LogConsole';
+import { MemoryRouter } from 'react-router';
+import { PageEyebrow, PageHeader, Section } from './Layout';
 
 beforeEach(()=>{
  setLanguage('en_US');
@@ -81,5 +83,26 @@ describe('audio, files and console',()=>{
  });
  it('replaces progress lines in place and clears stale output on reset',async()=>{
   const {rerender}=render(<LogConsole lines={[{id:1,text:'Starting',level:'info'},{id:2,text:'10%',level:'progress'}]}/>);rerender(<LogConsole lines={[{id:1,text:'Starting',level:'info'},{id:2,text:'100%',level:'progress'}]}/>);expect(screen.queryByText('10%')).not.toBeInTheDocument();expect(screen.getByText('100%')).toBeVisible();rerender(<LogConsole lines={[]}/>);await waitFor(()=>expect(screen.getByText('No log output yet.')).toBeVisible());expect(screen.queryByText('Starting')).not.toBeInTheDocument();
+ });
+});
+
+describe('grid layout primitives',()=>{
+ it('takes the page eyebrow from the shell and lets an explicit eyebrow win',()=>{
+  const {rerender}=render(<MemoryRouter><PageEyebrow value="Create"><PageHeader title="Synthesis" description="Give your words a voice." actions={<Button>Reset</Button>}/></PageEyebrow></MemoryRouter>);
+  expect(screen.getByRole('heading',{level:1,name:'Synthesis'})).toBeVisible();expect(screen.getByText('Create')).toBeVisible();expect(screen.getByText('Give your words a voice.')).toBeVisible();
+  rerender(<MemoryRouter><PageEyebrow value="Create"><PageHeader title="Synthesis" eyebrow="Studio"/></PageEyebrow></MemoryRouter>);
+  expect(screen.getByText('Studio')).toBeVisible();expect(screen.queryByText('Create')).not.toBeInTheDocument();
+ });
+ it('omits the eyebrow when the shell has none and shows a back link in its place',()=>{
+  const {container,rerender}=render(<MemoryRouter><PageEyebrow value={undefined}><PageHeader title="System"/></PageEyebrow></MemoryRouter>);
+  expect(container.querySelector('header p')).toBeNull();
+  rerender(<MemoryRouter><PageEyebrow value="Train"><PageHeader title="voice-a" back={{to:'/projects',label:'All projects'}}/></PageEyebrow></MemoryRouter>);
+  expect(screen.getByRole('link',{name:'All projects'})).toHaveAttribute('href','/projects');expect(screen.queryByText('Train')).not.toBeInTheDocument();
+ });
+ it('renders aside sections with the same heading structure as tiles',()=>{
+  render(<><Section layout="aside" title="Runtime acceleration" description="Applies on next load." actions={<Button>Apply</Button>}><p>Body</p></Section><Section title="Your result"><p>Result</p></Section></>);
+  const aside=screen.getByRole('heading',{level:2,name:'Runtime acceleration'}).closest('section')!;
+  expect(aside).toHaveAttribute('data-layout','aside');expect(aside).toHaveTextContent('Applies on next load.');expect(aside).toContainElement(screen.getByRole('button',{name:'Apply'}));
+  expect(screen.getByRole('heading',{level:2,name:'Your result'}).closest('section')).toHaveAttribute('data-layout','tile');
  });
 });

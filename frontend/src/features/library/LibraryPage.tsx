@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { AudioLines, FileText, Pencil, Play, Plus, RefreshCw, Save, Search, Trash2 } from 'lucide-react';
-import { AudioPlayer, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, IconButton, InlineAlert, PageHeader, Section, SegmentedControl, Skeleton, TextArea, TextInput, toast } from '@/ui';
+import { AudioPlayer, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, IconButton, InlineAlert, PageHeader, RouteTransition, Section, SegmentedControl, Skeleton, TextArea, TextInput, toast } from '@/ui';
 import { formatBytes, formatDuration } from '@/ui/format';
 import { errorMessage, isApiError, mediaUrl } from '@/api/client';
 import { useT } from '@/i18n';
@@ -34,7 +34,7 @@ export default function LibraryPage() {
             </button>)}</div>}
         </div>
       </Section>
-      {voice ? <VoiceDetail key={voice.path} voice={voice} onEdit={() => setEditVoice(voice)} onDeleted={() => setSelected('')} /> : description ? <DescriptionDetail key={description.path} description={description} onEdit={() => setEditingDescription(description)} onDeleted={() => setSelected('')} /> : <Section><EmptyState icon={tab === 'voices' ? AudioLines : FileText} title={t('Select an item to preview')} description={t('Listen, edit, or reuse a saved reference without leaving the page.')} /></Section>}
+      <RouteTransition scope={`${tab}:${selected}`}>{voice ? <VoiceDetail key={voice.path} voice={voice} onEdit={() => setEditVoice(voice)} onDeleted={() => setSelected('')} /> : description ? <DescriptionDetail key={description.path} description={description} onEdit={() => setEditingDescription(description)} onDeleted={() => setSelected('')} /> : <Section><EmptyState icon={tab === 'voices' ? AudioLines : FileText} title={t('Select an item to preview')} description={t('Listen, edit, or reuse a saved reference without leaving the page.')} /></Section>}</RouteTransition>
     </div>
     <VoiceEditorDialog open={createVoice || Boolean(editVoice)} onOpenChange={(open) => { if (!open) { setCreateVoice(false); setEditVoice(null); } }} initial={editVoice ?? undefined} onSaved={(path) => setSelected(path)} />
     {editingDescription && <DescriptionEditor value={editingDescription} onClose={() => setEditingDescription(null)} onSaved={setSelected} />}

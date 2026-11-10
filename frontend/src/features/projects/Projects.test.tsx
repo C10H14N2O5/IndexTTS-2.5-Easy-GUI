@@ -122,3 +122,19 @@ describe('project workbench', () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url, init]) => url === '/api/projects' && init?.method === 'POST')).toBe(true));
   });
 });
+
+describe('project transitions', () => {
+  it('fades only the tab content and keeps the project header mounted', async () => {
+    const animate = vi.fn(() => ({ cancel: vi.fn() }) as unknown as Animation);
+    Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, writable: true, value: animate });
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }));
+    try {
+      const router = mount('/projects/voice/outputs'); const heading = await screen.findByRole('heading', { level: 1, name: 'voice' });
+      expect(animate).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole('link', { name: 'Corpus' })); await waitFor(() => expect(router.state.location.pathname).toBe('/projects/voice/corpus'));
+      expect(screen.getByRole('heading', { level: 1, name: 'voice' })).toBe(heading);
+      expect(animate).toHaveBeenCalledTimes(1);
+      expect(heading.closest('[data-transition-scope]')).toBeNull();
+    } finally { delete (HTMLElement.prototype as Partial<HTMLElement>).animate; }
+  });
+});
