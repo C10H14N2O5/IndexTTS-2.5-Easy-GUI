@@ -179,6 +179,7 @@ class ConsoleLine(ApiModel):
 class ConsoleSnapshot(ApiModel):
     lines: list[ConsoleLine]
     current: str
+    reset: bool = False
 
 
 class Activity(OpenModel):

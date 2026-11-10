@@ -21,9 +21,12 @@ from pathlib import Path
 
 from .. import paths
 
-FAKE_DIR = paths.RUNTIME_DIR / "fake-engine"
-FAKE_MODEL_DIR = FAKE_DIR / "model"
 SAMPLE_RATE = 22050
+
+
+def model_dir() -> Path:
+    """Resolve per application/test root; never retain a real-data path at import."""
+    return paths.RUNTIME_DIR / "fake-engine" / "model"
 
 
 def write_tone(path: Path | str, seconds: float, frequency: float = 220.0, amplitude: float = 0.25) -> Path:
@@ -186,11 +189,12 @@ def fake_train_lora(config, callback, stop_event):
 
 
 def _ensure_fake_model() -> None:
-    FAKE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    if not (FAKE_MODEL_DIR / "gpt.pth").is_file():
-        (FAKE_MODEL_DIR / "gpt.pth").write_bytes(b"FAKE-GPT-BASE")
-    if not (FAKE_MODEL_DIR / "config.yaml").is_file():
-        (FAKE_MODEL_DIR / "config.yaml").write_text("fake: true\n", encoding="utf-8")
+    directory = model_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    if not (directory / "gpt.pth").is_file():
+        (directory / "gpt.pth").write_bytes(b"FAKE-GPT-BASE")
+    if not (directory / "config.yaml").is_file():
+        (directory / "config.yaml").write_text("fake: true\n", encoding="utf-8")
 
 
 def install(state) -> None:
@@ -201,5 +205,5 @@ def install(state) -> None:
     state.asr = FakeAsrService(paths.ROOT)
     state.export = ExportManager(paths.ROOT, script=Path(__file__).with_name("fake_merge.py"))
     state.training.train_fn = fake_train_lora
-    state.extras["model_dir"] = FAKE_MODEL_DIR
+    state.extras["model_dir"] = model_dir()
     print("[fake-engine] INDEXTTS_FAKE_ENGINE=1: synthesis, training, ASR and export are simulated.", flush=True)

@@ -40,10 +40,10 @@ export function useUpdateSettings() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (patch: SettingsPatch) => api.put<Settings>('/api/settings', patch),
-    onMutate: (patch) => {
-      if (patch.ui_language) setLanguage(patch.ui_language as Language);
-    },
+    // Apply language only after persistence succeeds. An optimistic language
+    // switch reconnects SSE before the write and can race its older snapshot.
     onSuccess: (settings) => {
+      setLanguage(settings.ui_language as Language);
       useLive.setState({ settings });
       client.setQueryData<Bootstrap>(bootstrapKey, (old) => (old ? { ...old, settings } : old));
     },

@@ -78,11 +78,13 @@
   --color-surface-3: #fbfbfd;
   --color-text: #1d1d1f;
   --color-text-2: #6e6e73;
-  --color-text-3: #86868b;
+  /* Caption hierarchy uses size and spacing, not unreadably low contrast. */
+  --color-text-3: #6e6e73;
   --color-separator: #d2d2d7;
   --color-separator-soft: #e8e8ed;
   --color-accent: #0071e3;
   --color-on-accent: #ffffff;
+  --color-on-error: #ffffff;
   --color-success: #248a3d;
   --color-warning: #b25000;
   --color-error: #d70015;
@@ -99,11 +101,12 @@
   --color-surface-3: #2c2c2e;
   --color-text: #f5f5f7;
   --color-text-2: #a1a1a6;
-  --color-text-3: #8e8e93;
+  --color-text-3: #96969b;
   --color-separator: #38383a;
   --color-separator-soft: #2c2c2e;
   --color-accent: #2997ff;
-  --color-on-accent: #ffffff;
+  --color-on-accent: #001b36;
+  --color-on-error: #240000;
   --color-success: #30d158;
   --color-warning: #ff9f0a;
   --color-error: #ff453a;

@@ -1,1 +1,0 @@
-import{n as e,r as t}from"./index-DPvh0hMI.js";var n=t();function r(){return(0,n.jsx)(e,{})}export{r as default};

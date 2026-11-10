@@ -8,7 +8,8 @@
 | --- | --- |
 | Python | 3.11.15（由安装程序下载） |
 | PyTorch | 2.8.0+cu128（CUDA runtime 12.8，不需要另装 CUDA Toolkit） |
-| Gradio | 5.45.0 |
+| Web 服务 | FastAPI 0.116.2 + Uvicorn 0.35.0（现有锁定环境已包含） |
+| 浏览器前端 | 内置已构建 React SPA，用户不需要 Node.js |
 | 语音识别 | SenseVoiceSmall Q8，CPU 运行，需要[单独导入](#导入-asr-程序和模型) |
 
 请用安装脚本安装，不要用 `pip install` 或 `uv sync` 代替：训练依赖、FFmpeg 和加速组件都由脚本另外安装。
@@ -38,7 +39,7 @@
 
 ## 导入 ASR 程序和模型
 
-“数据准备”页的批量识别，以及参考音频的自动转写，都使用 SenseVoiceSmall Q8 在 CPU 上运行。不需要识别功能的话可以跳过本节。
+“训练项目 → 语料”中的批量识别，以及参考音频的自动转写，都使用 SenseVoiceSmall Q8 在 CPU 上运行。不需要识别功能的话可以跳过本节。
 
 1. 下载 [FunASR Windows CPU 便携运行时](https://github.com/modelscope/FunASR/releases/tag/runtime-llamacpp-v0.2.6) 和 [SenseVoiceSmall Q8 GGUF 模型](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF)，整理成下面的结构：
 
@@ -70,9 +71,11 @@ rem set "HTTP_PROXY=http://127.0.0.1:7890"
 rem set "HTTPS_PROXY=http://127.0.0.1:7890"
 ```
 
-**局域网访问**：把 `INDEXTTS_HOST` 改成这台电脑的局域网 IP。注意，界面里填写的语料、模型、导出路径都是**运行 GUI 的那台电脑**上的路径；“浏览”“另存为”等系统窗口也会在那台电脑上弹出，远程操作时请直接输入路径。
+**局域网访问**：把 `INDEXTTS_HOST` 改成这台电脑的局域网 IP。界面中的语料、模型、导出路径都属于**运行 GUI 的那台电脑**；新的网页文件浏览器可远程选择服务器目录，不再弹服务器桌面窗口。此服务无账户鉴权，仅用于可信本机/局域网，不要直接开放公网。
 
-**界面语言**：在界面顶部的“界面语言 / UI Language”中切换，重启后生效。界面语言和合成运行选项保存在 `.runtime/gui_settings.json`。
+**录音与通知**：localhost 或 HTTPS 通常允许麦克风/通知；通过局域网 IP 的明文 HTTP 访问时，浏览器通常禁用这些能力。界面会解释原因，音频上传仍可用。
+
+**语言与外观**：顶栏可即时切换中文/English、浅色/深色/跟随系统，无需重启。设置与运行时选项保存在 `.runtime/gui_settings.json`。已有环境已包含 FastAPI，不需要重新安装；前端构建随程序一起分发，普通用户不需要 Node.js。
 
 ## 可选加速组件
 

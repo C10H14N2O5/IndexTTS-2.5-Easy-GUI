@@ -6,13 +6,14 @@ the 1-second change ticker (``training``, ``export``, ``system`` ...).
 """
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .console import CONSOLE, ConsoleBuffer
 from .events import EventHub
 from .jobs import JobManager
-from .status import STATUS, StatusLog
+from .status import StatusLog
 
 
 @dataclass
@@ -45,13 +46,22 @@ class AppState:
 
 
 _STATE: AppState | None = None
+_REQUEST_STATE: contextvars.ContextVar[AppState | None] = contextvars.ContextVar("gui_state", default=None)
 
 
 def build(fake: bool) -> AppState:
     hub = EventHub()
-    STATUS.bind(hub.publish)
     jobs = JobManager(publish=hub.publish)
-    return AppState(fake=fake, hub=hub, jobs=jobs, status=STATUS, console=CONSOLE)
+    return AppState(fake=fake, hub=hub, jobs=jobs, status=StatusLog(hub.publish), console=CONSOLE)
+
+
+def bind(state: AppState):
+    """Bind one app for this request/lifespan; job threads copy this context."""
+    return _REQUEST_STATE.set(state)
+
+
+def reset(token) -> None:
+    _REQUEST_STATE.reset(token)
 
 
 def install(state: AppState) -> None:
@@ -60,6 +70,7 @@ def install(state: AppState) -> None:
 
 
 def current() -> AppState:
-    if _STATE is None:
+    state = _REQUEST_STATE.get() or _STATE
+    if state is None:
         raise RuntimeError("GUI application state is not initialised; call create_app() first.")
-    return _STATE
+    return state

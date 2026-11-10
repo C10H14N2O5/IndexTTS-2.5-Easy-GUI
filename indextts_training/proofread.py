@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 
 from .dataset import AUDIO_EXTS, DATASET_LOCK
 
@@ -425,10 +425,12 @@ def create_proofread_router(root, asr_service, training_running=lambda: False):
         status = 403 if isinstance(exc, PermissionError) else 409 if isinstance(exc, Conflict) else 400
         return JSONResponse({"error": str(exc)}, status_code=status, headers=headers)
 
-    @router.get("/", response_class=HTMLResponse)
+    @router.get("", response_class=RedirectResponse, include_in_schema=False)
+    @router.get("/", response_class=RedirectResponse, include_in_schema=False)
     def page():
-        html_headers = {**headers, "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self'; frame-ancestors 'self'"}
-        return HTMLResponse((root / "tools/proofread/index.html").read_text(encoding="utf-8"), headers=html_headers)
+        # Legacy bookmarks now enter the React project workbench. The token,
+        # origin, context/version and filesystem contracts below are unchanged.
+        return RedirectResponse("/projects", status_code=307, headers=headers)
 
     @router.post("/api/session")
     def new_session(request: Request):

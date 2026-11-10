@@ -4,7 +4,11 @@
 
 A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). Clone a voice from reference audio and synthesize speech; you can also prepare your own speech corpus, fine-tune a LoRA, and export the result for ComfyUI.
 
-> The interface defaults to Simplified Chinese and can be switched to English. Detailed guides under `docs/` are written in Chinese.
+> **2.0 feature-branch preview, not yet released on main.** The React + TypeScript / FastAPI interface offers progressive settings, live task progress, cancellation feedback, light/dark themes and instant Chinese/English switching. Dataset proofreading, validation, training charts and outputs are grouped by project.
+>
+> Existing launchers, data formats and ZIP updates are preserved. End users do not need Node.js or a Python environment reinstall. Detailed guides are in Chinese; real GPU checks are listed in the [acceptance checklist](webui-acceptance.md).
+
+![English dark interface, using isolated fake-engine demonstration data](<../assets/webui-2-dark.png>)
 
 ## Features
 
@@ -19,10 +23,10 @@ A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). 
 ## Requirements
 
 - Windows 10/11 x64
-- An NVIDIA GPU and driver (required; only speech recognition runs on the CPU)
+- An NVIDIA GPU and driver for inference and training; speech recognition and checkpoint merging compute on the CPU
 - Internet access for the first install and the first launch
 
-The maintainer runs training and inference without running out of memory on the setup below. This is a reference point, not a minimum requirement:
+The maintainer used the following hardware with the previous interface. It is a reference point, not a minimum requirement; the 2.0 feature branch still requires the real-GPU acceptance checks:
 
 | CPU | RAM | GPU |
 | --- | --- | --- |
@@ -34,7 +38,7 @@ Memory use depends on clip length, synthesis settings, and training parameters.
 
 1. Download the project and double-click **`1- install.bat`**. The installer puts Python and all dependencies inside the project folder and leaves any system Python alone.
 2. Double-click **`2- run.bat`**. The first launch downloads the IndexTTS 2.5 model, then the GUI opens at <http://127.0.0.1:7860>.
-3. To use speech recognition on the Dataset Preparation page, import the ASR runtime and model separately; see [Installation](installation.md#导入-asr-程序和模型).
+3. To use speech recognition under Projects → Corpus, import the ASR runtime and model separately; see [Installation](installation.md#导入-asr-程序和模型).
 
 ## Updating
 

@@ -28,10 +28,13 @@ export default defineConfig({
     emptyOutDir: true,
     assetsDir: 'assets',
     sourcemap: false,
+    license: { fileName: 'THIRD_PARTY_NOTICES.md' },
     chunkSizeWarningLimit: 900,
   },
   server: {
-    port: 5173,
+    // Parallel developers each run their own backend + dev server (INDEXTTS_DEV_BACKEND / INDEXTTS_DEV_PORT).
+    port: Number(process.env.INDEXTTS_DEV_PORT ?? 5173),
+    host: process.env.INDEXTTS_DEV_HOST ?? '127.0.0.1',
     strictPort: true,
     proxy: { '/api': proxy, '/proofread/api': proxy, '/exports': proxy },
   },

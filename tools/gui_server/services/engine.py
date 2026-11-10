@@ -18,6 +18,7 @@ from .system import acceleration_capabilities, model_files_present
 MODEL_LOCK = threading.RLock()
 _MODEL = None
 _OPTIONS: tuple | None = None
+_CONTEXT: tuple | None = None
 OPTION_NAMES = ("use_bf16", "use_gpt_latent", "use_torch_compile", "use_flash_accel", "use_qwen_emo", "adapter")
 
 
@@ -29,27 +30,39 @@ def _fake() -> bool:
         return False
 
 
+def _context() -> tuple:
+    from ..state import current
+    try:
+        state_id = id(current())
+    except RuntimeError:
+        state_id = None
+    return (_fake(), str(paths.MODEL_DIR.resolve()), state_id)
+
+
 def loaded_info() -> dict:
     options = _OPTIONS
-    if _MODEL is None or options is None:
+    if _MODEL is None or options is None or _CONTEXT != _context():
         return {"loaded": False, "adapter": None, "options": None}
     named = dict(zip(OPTION_NAMES, options))
     return {"loaded": True, "adapter": named.pop("adapter") or None, "options": named}
 
 
 def is_loaded() -> bool:
-    return _MODEL is not None
+    return _MODEL is not None and _CONTEXT == _context()
 
 
 def load_model(use_bf16: bool, use_gpt_latent: bool, use_torch_compile: bool, use_flash_accel: bool,
                use_qwen_emo: bool, adapter_path: str = ""):
-    global _MODEL, _OPTIONS
+    global _MODEL, _OPTIONS, _CONTEXT
     adapter_path = str(adapter_path or "")
     if adapter_path == NONE_SENTINEL:
         adapter_path = ""
     options = (bool(use_bf16), bool(use_gpt_latent), bool(use_torch_compile), bool(use_flash_accel),
                bool(use_qwen_emo), adapter_path)
     with MODEL_LOCK:
+        context = _context()
+        if _CONTEXT != context:
+            unload()
         if _fake():
             from ..fake import FakeTTS
             if _MODEL is None or _OPTIONS != options:
@@ -57,6 +70,7 @@ def load_model(use_bf16: bool, use_gpt_latent: bool, use_torch_compile: bool, us
                     raise ServiceError("LoRA adapter is missing adapter_config.json: {0}", adapter_path)
                 _MODEL = FakeTTS(options)
                 _OPTIONS = options
+                _CONTEXT = context
             return _MODEL
         if not model_files_present():
             raise ServiceError("IndexTTS 2.5 model is missing. Restart with 2- run.bat so the automatic model "
@@ -107,16 +121,19 @@ def load_model(use_bf16: bool, use_gpt_latent: bool, use_torch_compile: bool, us
             print(f"[adapter] Loaded IndexTTS 2.5 LoRA: {adapter}", flush=True)
         _MODEL = model
         _OPTIONS = options
+        _CONTEXT = context
         return _MODEL
 
 
 def unload() -> None:
-    global _MODEL, _OPTIONS
+    global _MODEL, _OPTIONS, _CONTEXT
     with MODEL_LOCK:
+        skip_cuda_cleanup = bool(_CONTEXT[0]) if _CONTEXT is not None else _fake()
         _MODEL = None
         _OPTIONS = None
+        _CONTEXT = None
         gc.collect()
-        if _fake():
+        if skip_cuda_cleanup:
             return
         try:
             import torch

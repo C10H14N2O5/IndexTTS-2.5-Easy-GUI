@@ -53,13 +53,19 @@ def ensure_model() -> None:
 
 
 def serve(host: str | None = None, port: int | None = None, *, fake: bool | None = None,
-          open_browser: bool = True) -> None:
+          open_browser: bool = True, data_dir: str | None = None) -> None:
     host = host or os.environ.get("INDEXTTS_HOST", "127.0.0.1")
     port = int(port or os.environ.get("INDEXTTS_PORT", "7860"))
     if fake is not None:
         os.environ["INDEXTTS_FAKE_ENGINE"] = "1" if fake else "0"
-    runtime_env.configure()
     fake = runtime_env.fake_engine_enabled()
+    if data_dir is not None:
+        if not fake:
+            raise ValueError("--data-dir is available only with --fake; production data paths are unchanged.")
+        paths.use_data_root(data_dir)
+    runtime_env.configure()
+    from tools.version import __version__
+    print(f"[startup] IndexTTS 2.5 Easy GUI v{__version__}", flush=True)
     if not fake:
         ensure_model()
     console.install()
@@ -81,8 +87,9 @@ def main(argv=None) -> None:
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--fake", action="store_true", help="simulate synthesis, training, ASR and export")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--data-dir", help="isolated data directory for --fake demos (shipped assets are unchanged)")
     args = parser.parse_args(argv)
-    serve(args.host, args.port, fake=True if args.fake else None, open_browser=not args.no_browser)
+    serve(args.host, args.port, fake=True if args.fake else None, open_browser=not args.no_browser, data_dir=args.data_dir)
 
 
 if __name__ == "__main__":

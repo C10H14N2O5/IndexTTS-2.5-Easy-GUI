@@ -1,0 +1,18 @@
+{
+  "Activity: {0} running": "活动：{0} 个任务正在运行",
+  "Activity": "活动",
+  "Current work, recent completions, and useful status details.": "当前任务、最近完成的工作与详细状态。",
+  "Running now": "正在运行",
+  "All caught up": "全部处理完毕",
+  "No tasks are running.": "当前没有运行中的任务。",
+  "Stop training": "停止训练",
+  "Step {0} of {1}": "第 {0} / {1} 步",
+  "Remaining: {0}": "预计剩余：{0}",
+  "Cancel export": "取消导出",
+  "Recent tasks": "最近任务",
+  "Status history": "状态历史",
+  "Details": "详情",
+  "Task failed": "任务失败",
+  "Task cancelled": "任务已取消",
+  "Task completed": "任务已完成"
+}

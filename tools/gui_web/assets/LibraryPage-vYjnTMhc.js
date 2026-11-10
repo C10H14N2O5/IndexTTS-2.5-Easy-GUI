@@ -1,1 +1,0 @@
-import{r as e,t}from"./index-DPvh0hMI.js";var n=e();function r(){let e=t();return(0,n.jsx)(`h1`,{children:e(`Voice library`)})}export{r as default};

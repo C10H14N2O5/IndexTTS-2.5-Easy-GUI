@@ -85,7 +85,7 @@ def put_settings(patch: SettingsPatch):
 @router.get("/events", include_in_schema=False)
 async def events(request: Request):
     state = current()
-    language = i18n.normalize(request.query_params.get("lang"))
+    language = i18n.current_language()
     stream = state.hub.stream(language, full_snapshot, request.is_disconnected)
     return StreamingResponse(stream, media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

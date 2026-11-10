@@ -23,7 +23,9 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
 
 from tools.version import __version__ as APP_VERSION
@@ -31,7 +33,8 @@ from tools.version import __version__ as APP_VERSION
 from . import i18n, paths, runtime_env
 from .errors import ServiceError, error_payload
 from .security import SPA_CSP, GuardMiddleware
-from .state import AppState, build, install
+from .schemas import ErrorResponse
+from .state import AppState, bind, build, install, reset
 
 ROUTER_MODULES = (
     "core", "system", "library", "synthesis", "history", "projects", "training",
@@ -50,9 +53,10 @@ class _ImmutableStatic(StaticFiles):
 
 def _wire_services(state: AppState) -> None:
     from indextts_training.export import ExportManager
-    from indextts_training.manager import TRAINING_MANAGER
+    from indextts_training.manager import TrainingManager
 
-    state.training = TRAINING_MANAGER
+    # Fake trainers must never remain installed in a later production app.
+    state.training = TrainingManager()
     if state.fake:
         from . import fake
         fake.install(state)
@@ -67,12 +71,33 @@ def _language(request: Request) -> str | None:
 
 
 def _install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        # Never echo raw input (which may include a whole transcript or uploaded bytes).
+        detail = [{"field": ".".join(map(str, item["loc"])), "message": item["msg"], "type": item["type"]}
+                  for item in exc.errors()[:20]]
+        return JSONResponse({"error": {"code": "invalid", "message": i18n.t("Check the highlighted fields."),
+                                        "detail": detail}}, status_code=400)
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException):
+        if request.scope.get("gui_upload_too_large"):
+            exc = HTTPException(status_code=413, detail="Audio uploads must not exceed 200 MB.")
+        if not request.url.path.startswith("/api/"):
+            # Preserve legacy export-download response contracts.
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+        code = {400: "invalid", 403: "forbidden", 404: "not_found", 409: "conflict", 413: "too_large"}.get(
+            exc.status_code, "http_error")
+        return JSONResponse({"error": {"code": code, "message": i18n.backend(str(exc.detail)), "detail": None}},
+                            status_code=exc.status_code, headers=exc.headers)
+
     async def handle(request: Request, exc: Exception):
-        status, body = error_payload(exc, i18n.normalize(_language(request)) if _language(request) else None)
+        language = i18n.normalize(_language(request))
+        status, body = error_payload(exc, language)
         if status >= 500:
             import traceback
             traceback.print_exception(exc)
-        return JSONResponse(i18n.render(body), status_code=status)
+        return JSONResponse(i18n.render(body, language), status_code=status)
 
     for exc_type in (ServiceError, ValueError, KeyError, RuntimeError, OSError, Exception):
         app.add_exception_handler(exc_type, handle)
@@ -135,6 +160,7 @@ def create_app(*, fake: bool | None = None, background: bool = True) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
+        state_token = bind(state)
         state.hub.attach_loop(asyncio.get_running_loop())
         task = None
         if background:
@@ -149,9 +175,16 @@ def create_app(*, fake: bool | None = None, background: bool = True) -> FastAPI:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+            await asyncio.to_thread(state.jobs.shutdown)
+            if state.training.snapshot().get("running"):
+                state.training.stop()
+            state.training._stop_tensorboard_server()
+            state.export.cancel()
+            reset(state_token)
 
     app = FastAPI(title="IndexTTS 2.5 Easy GUI", version=APP_VERSION, lifespan=lifespan,
-                  docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
+                  docs_url=None, redoc_url=None, openapi_url="/api/openapi.json",
+                  responses={400: {"model": ErrorResponse, "description": "Invalid request"}})
     app.state.gui = state
     _install_error_handlers(app)
 
@@ -167,7 +200,23 @@ def create_app(*, fake: bool | None = None, background: bool = True) -> FastAPI:
                                                lambda: bool(state.training.snapshot().get("running"))))
     app.include_router(create_export_router(state.export))
     _mount_spa(app)
-    app.add_middleware(GuardMiddleware)
+    app.add_middleware(GuardMiddleware, state=state)
+    default_openapi = app.openapi
+
+    def openapi():
+        document = default_openapi()
+        # FastAPI inserts a stock 422 even with our RequestValidationError
+        # handler. Publish the actual structured 400 contract instead.
+        for route, methods in document.get("paths", {}).items():
+            if route.startswith("/api/"):
+                for operation in methods.values():
+                    if isinstance(operation, dict):
+                        responses = operation.get("responses", {})
+                        if responses.get("422", {}).get("description") == "Validation Error":
+                            responses.pop("422", None)
+        return document
+
+    app.openapi = openapi
     return app
 
 

@@ -59,4 +59,9 @@ STATUS = StatusLog()
 
 
 def publish(phase, message, level="info", detail="") -> dict:
-    return STATUS.publish(phase, message, level, detail)
+    from .state import current
+    try:
+        log = current().status
+    except RuntimeError:
+        log = STATUS
+    return log.publish(phase, message, level, detail)

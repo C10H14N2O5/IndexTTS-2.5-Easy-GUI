@@ -13,6 +13,7 @@ import asyncio
 import itertools
 import json
 import threading
+import time
 from typing import Any, AsyncIterator, Callable
 
 from .i18n import render
@@ -101,7 +102,7 @@ class EventHub:
                 except asyncio.TimeoutError:
                     if is_disconnected is not None and await is_disconnected():
                         break
-                    yield ": heartbeat\n\n"
+                    yield self.encode({"id": next(self._seq), "type": "heartbeat", "data": {"time": time.time()}}, language)
                     continue
                 if event is None or subscriber.dropped:
                     break

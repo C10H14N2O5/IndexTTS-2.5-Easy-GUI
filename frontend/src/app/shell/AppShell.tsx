@@ -1,34 +1,23 @@
-/**
- * P0 placeholder shell (owned by the ui-kit teammate from P1): sidebar
- * navigation plus the routed page. The final shell adds the top bar, activity
- * center, console drawer, toasts and the SSE reconnect banner.
- */
-import { NavLink, Outlet } from 'react-router';
+import { useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigation } from 'react-router';
+import { AudioLines, Cpu, FlaskConical, Languages, Monitor, Moon, Sun, Terminal, WifiOff } from 'lucide-react';
 import { NAV } from '@/app/routes';
-import { useT } from '@/i18n';
+import { useBootstrap, useSettings, useUpdateSettings } from '@/app/bootstrap';
+import { resolveTheme, type ThemeSetting } from '@/app/theme';
+import { useGpuJob, useLive } from '@/api/live';
+import { errorMessage } from '@/api/client';
+import { useLanguage, useT } from '@/i18n';
+import { ActivityButton, useActivityEffects } from '@/features/activity';
+import { Badge, Button, IconButton, Popover, ProgressBar, SegmentedControl, Spinner, Toaster, Tooltip, toast } from '@/ui';
+import { ConsoleDrawer } from './ConsoleDrawer';
 import styles from './AppShell.module.css';
 
-export function AppShell() {
-  const t = useT();
-  return (
-    <div className={styles.shell}>
-      <nav className={styles.sidebar} aria-label={t('Main navigation')}>
-        <div className={styles.brand}>IndexTTS</div>
-        {NAV.map((group) => (
-          <div key={group.label} className={styles.group}>
-            <div className={styles.groupLabel}>{t(group.label)}</div>
-            {group.items.map((item) => (
-              <NavLink key={item.path} to={item.path} className={({ isActive }) => (isActive ? styles.active : styles.link)}>
-                <item.icon size={18} aria-hidden />
-                <span>{t(item.label)}</span>
-              </NavLink>
-            ))}
-          </div>
-        ))}
-      </nav>
-      <main className={styles.main}>
-        <Outlet />
-      </main>
-    </div>
-  );
+export function AppShell(){
+ const t=useT();const location=useLocation();const navigation=useNavigation();const {data:bootstrap}=useBootstrap();const connection=useLive(state=>state.connection);const system=useLive(state=>state.system)??bootstrap?.system;const training=useLive(state=>state.training);const exporting=useLive(state=>state.export);const gpuJob=useGpuJob();const language=useLanguage();const settings=useUpdateSettings();const savedSettings=useSettings();const theme=savedSettings?.theme??'system';const resolved=resolveTheme(theme);const setTheme=(value:ThemeSetting)=>settings.mutate({theme:value},{onError:error=>toast.error(errorMessage(error))});const [consoleOpen,setConsoleOpen]=useState(false);
+ useActivityEffects();
+ const current=NAV.flatMap(group=>group.items).find(item=>location.pathname.startsWith(item.path));
+ const busy=Boolean(gpuJob||training?.running||exporting?.status==='running');const busyLabel=gpuJob?.title??(training?.running?t('Training'):exporting?.status==='running'?t('Export'):undefined);
+ const gpuDetail=busyLabel?t('GPU busy · {0}',busyLabel):system?.cuda?.available?t('GPU ready · {0}',system.cuda.device??'CUDA'):t('GPU is not available');
+ async function changeLanguage(){try{await settings.mutateAsync({ui_language:language==='zh_CN'?'en_US':'zh_CN'});}catch(err){toast.error(errorMessage(err));}}
+ return <div className={styles.shell}><a className={styles.skip} href="#main-content">{t('Skip to content')}</a><aside className={styles.sidebar}><div className={styles.brand}><div className={styles.brandMark} aria-hidden><AudioLines size={22}/></div><div className={styles.brandText}><strong>IndexTTS</strong><span>Easy GUI</span></div></div><nav aria-label={t('Main navigation')} className={styles.nav}>{NAV.map(group=><div key={group.label} className={styles.group}><div className={styles.groupLabel}>{t(group.label)}</div>{group.items.map(item=><Tooltip key={item.path} content={t(item.label)} side="right"><NavLink to={item.path} aria-label={t(item.label)} className={location.pathname.startsWith(item.path)?styles.active:styles.link}><item.icon size={18} aria-hidden/><span>{t(item.label)}</span></NavLink></Tooltip>)}</div>)}</nav><div className={styles.sidebarFooter}><span className={styles.connectionDot} data-status={connection} aria-hidden/><span>{connection==='open'?t('Connected'):t('Connecting…')}</span><small>{bootstrap?.version?`v${bootstrap.version}`:''}</small></div></aside><div className={styles.workspace}><header className={styles.topbar}><div className={styles.pageIdentity}>{current&&<><current.icon size={16} aria-hidden/><span>{t(current.label)}</span></>}</div><div className={styles.topbarActions}><Tooltip content={gpuDetail}><span className={styles.gpuStatus} tabIndex={0} data-busy={busy||undefined}><Cpu size={15}/>{busy?<><Spinner size={12}/><span>{t('GPU busy')}</span></>:<span>{system?.cuda?.available?t('GPU ready'):t('CPU only')}</span>}</span></Tooltip><div className={styles.toolbarDivider}/><IconButton icon={Languages} label={language==='zh_CN'?t('Switch to English'):t('Switch to Chinese')} onClick={()=>void changeLanguage()} pending={settings.isPending}/><Popover trigger={<IconButton icon={resolved==='dark'?Moon:Sun} label={t('Appearance')}/>}><div className={styles.themePanel}><strong>{t('Appearance')}</strong><SegmentedControl value={theme} onChange={setTheme} aria-label={t('Appearance')} options={[{value:'light',label:t('Light'),icon:Sun},{value:'dark',label:t('Dark'),icon:Moon},{value:'system',label:t('Automatic'),icon:Monitor}]}/></div></Popover><ActivityButton/><IconButton icon={Terminal} label={t('Open console')} onClick={()=>setConsoleOpen(true)}/></div>{navigation.state!=='idle'&&<div className={styles.navigationProgress}><ProgressBar value={null} label={t('Loading page')} size="sm"/></div>}</header>{connection!=='open'&&<div className={styles.reconnect} role="status"><WifiOff size={16}/><span>{t('Connection lost. Reconnecting automatically…')}</span><Button variant="text" size="sm" onClick={()=>window.location.reload()}>{t('Reload interface')}</Button></div>}{bootstrap?.fake_engine&&<div className={styles.fakeBanner} role="status"><FlaskConical size={16}/><span>{t('Demo mode — generated audio and training results are simulated.')}</span><Badge tone="neutral">{t('No model required')}</Badge></div>}<main id="main-content" tabIndex={-1} className={styles.main}><div className={styles.content}><Outlet/></div></main></div><ConsoleDrawer open={consoleOpen} onOpenChange={setConsoleOpen}/><Toaster/></div>;
 }

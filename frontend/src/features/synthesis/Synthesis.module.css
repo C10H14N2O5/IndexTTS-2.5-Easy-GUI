@@ -1,0 +1,21 @@
+.page { max-width: var(--content-max); margin: 0 auto; display: grid; gap: var(--space-5); }
+.layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); align-items: start; gap: var(--gutter); }
+.stack { display: grid; gap: var(--space-5); min-width: 0; }
+.fields { display: grid; gap: var(--space-4); }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-4); }
+.muted { font: var(--type-caption); color: var(--color-text-2); }
+.actionbar { position: sticky; bottom: 0; z-index: 5; padding: var(--space-4); border: 1px solid var(--color-separator-soft); background: var(--color-bg); border-radius: var(--radius-md); box-shadow: var(--shadow-1); display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); }
+.turn { border: 1px solid var(--color-separator-soft); border-radius: var(--radius-md); padding: var(--space-5); display: grid; gap: var(--space-4); background: var(--color-bg); }
+.turnTitle { font: var(--type-label); }
+.turnList { display: grid; gap: var(--space-4); }
+.result { display: grid; gap: var(--space-4); }
+.resultMeta { display: flex; flex-wrap: wrap; gap: var(--space-4); font: var(--type-caption); color: var(--color-text-2); font-variant-numeric: tabular-nums; }
+.history { display: grid; gap: var(--space-4); }
+.historyItem { display: grid; gap: var(--space-3); padding-bottom: var(--space-4); border-bottom: 1px solid var(--color-separator-soft); }
+.historyItem:last-child { border: 0; padding-bottom: 0; }
+.historyName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--type-label); max-width: 100%; }
+.job { display: grid; gap: var(--space-3); }
+.jobHeading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+@media (max-width: 1150px) { .layout { grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr); } .two { gap: var(--space-4); } }

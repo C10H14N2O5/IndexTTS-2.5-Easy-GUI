@@ -11,9 +11,14 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import i18n
+from starlette.formparsers import MultiPartException
+
+from . import i18n, state as state_context
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Exact file-content cap is 200 MiB in services.uploads; reserve one MiB for
+# multipart headers, and enforce this before Starlette spools the whole request.
+MAX_UPLOAD_BODY_BYTES = 201 * 1024 * 1024
 BASE_HEADERS = [
     (b"x-content-type-options", b"nosniff"),
     (b"referrer-policy", b"no-referrer"),
@@ -34,7 +39,10 @@ def _header(scope, name: bytes) -> str | None:
 def origin_allowed(scope) -> bool:
     origin = _header(scope, b"origin")
     if origin:
-        parsed = urlsplit(origin)
+        try:
+            parsed = urlsplit(origin)
+        except ValueError:
+            return False
         if parsed.scheme != scope.get("scheme", "http") or parsed.netloc != _header(scope, b"host"):
             return False
     return _header(scope, b"sec-fetch-site") != "cross-site"
@@ -52,15 +60,47 @@ def request_language(scope) -> str | None:
 class GuardMiddleware:
     """Sets the request language and rejects cross-origin writes to the API."""
 
-    def __init__(self, app):
+    def __init__(self, app, state=None):
         self.app = app
+        self.state = state
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         path = scope.get("path", "")
+        state_token = state_context.bind(self.state) if self.state is not None else None
         token = i18n.set_current_language(request_language(scope))
         try:
+            async def reject(status, code, message):
+                body = json.dumps({"error": {"code": code, "message": i18n.t(message), "detail": None}}).encode("utf-8")
+                await send({"type": "http.response.start", "status": status,
+                            "headers": [(b"content-type", b"application/json"), (b"cache-control", b"no-store"), *BASE_HEADERS]})
+                await send({"type": "http.response.body", "body": body})
+
+            limited_receive = receive
+            if path.rstrip("/") == "/api/uploads" and scope.get("method") == "POST":
+                length = _header(scope, b"content-length")
+                if length is not None:
+                    try:
+                        too_large = int(length) > MAX_UPLOAD_BODY_BYTES
+                    except ValueError:
+                        return await reject(400, "invalid", "Invalid Content-Length.")
+                    if too_large:
+                        return await reject(413, "too_large", "Audio uploads must not exceed 200 MB.")
+                received = 0
+
+                async def limited_receive():
+                    nonlocal received
+                    message = await receive()
+                    if message["type"] == "http.request":
+                        received += len(message.get("body", b""))
+                        if received > MAX_UPLOAD_BODY_BYTES:
+                            scope["gui_upload_too_large"] = True
+                            # MultipartParser closes all partial spooled files on this
+                            # exception, unlike an arbitrary exception from receive().
+                            raise MultiPartException("Audio uploads must not exceed 200 MB.")
+                    return message
+
             if (path.startswith("/api/") and scope.get("method", "GET") not in SAFE_METHODS
                     and not origin_allowed(scope)):
                 body = json.dumps({"error": {"code": "forbidden", "message": i18n.t("Invalid request origin."),
@@ -80,9 +120,11 @@ class GuardMiddleware:
                     message = {**message, "headers": headers}
                 await send(message)
 
-            await self.app(scope, receive, send_with_headers)
+            await self.app(scope, limited_receive, send_with_headers)
         finally:
             i18n.reset_current_language(token)
+            if state_token is not None:
+                state_context.reset(state_token)
 
 
 def resolve_allowed(path: str | Path, roots: list[Path]) -> Path | None:

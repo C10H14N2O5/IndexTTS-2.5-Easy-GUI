@@ -99,6 +99,7 @@ class ExportManager:
         self.state = dict(status='idle', phase='idle', elapsed=0.0, log='', output='',
                           error='', report={}, token='', task_id='', logfile='')
         self.started = 0.0
+        self.on_finished = None
         atexit.register(self.cancel)
 
     def snapshot(self) -> dict:
@@ -209,7 +210,7 @@ class ExportManager:
                 staged_output = staging / output.name
                 staged_report = staged_output.with_suffix('.merge.json')
                 report = json.loads(staged_report.read_text(encoding='utf-8'))
-                if not staged_output.is_file() or not report.get('source_files_unchanged') or not report.get('round_trip_tensors_identical'):
+                if not staged_output.is_file() or report.get('source_files_unchanged') is not True or report.get('round_trip_tensors_identical') is not True:
                     raise RuntimeError('Export validation report is incomplete.')
                 report['output'] = str(output)
                 staged_report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
@@ -252,6 +253,11 @@ class ExportManager:
                     self.process = None
                     self.state['elapsed'] = time.monotonic() - self.started
                 release(activity_token)
+                if self.on_finished is not None:
+                    try:
+                        self.on_finished(self.snapshot())
+                    except Exception:
+                        pass
 
     def cancel(self) -> dict:
         with self.lock:

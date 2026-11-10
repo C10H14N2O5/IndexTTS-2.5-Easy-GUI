@@ -108,6 +108,10 @@ export const api = {
 /** Multipart upload with progress (XMLHttpRequest, since fetch has no upload progress). */
 export function upload<T>(path: string, form: FormData, onProgress?: (fraction: number) => void, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('aborted', 'AbortError'));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open('POST', path);
     xhr.setRequestHeader('X-UI-Language', getLanguage());
@@ -121,7 +125,9 @@ export function upload<T>(path: string, form: FormData, onProgress?: (fraction: 
       const { code, message, detail, ...extra } = body?.error ?? {};
       reject(new ApiError(xhr.status, String(code ?? 'error'), String(message ?? t('Upload failed.')), detail, extra));
     };
-    signal?.addEventListener('abort', () => xhr.abort());
+    const abort = () => xhr.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    xhr.onloadend = () => signal?.removeEventListener('abort', abort);
     xhr.send(form);
   });
 }

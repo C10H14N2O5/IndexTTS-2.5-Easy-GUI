@@ -10,6 +10,8 @@ class TrainingManager:
         self.train_fn=None
         # Optional completion hook (the web GUI notifies browsers instead of playing a sound on the server).
         self.on_finished=None
+        # Called only after acquiring the shared activity lease (e.g. evict inference weights).
+        self.before_start=None
         self.state={'running':False,'failed':False,'step':0,'total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':'',
                     'started_at':None,'finished_at':None,'output_dir':'','project':'','adapter':''}
     def _update(self,**kw):
@@ -74,6 +76,8 @@ class TrainingManager:
                     try: hook(outcome,self.snapshot())
                     except Exception: pass
         try:
+            if self.before_start is not None:
+                self.before_start()
             if config.get('output_dir'):
                 from .dataset import _atomic_write
                 saved = dict(config)

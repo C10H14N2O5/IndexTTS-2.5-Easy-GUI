@@ -76,6 +76,14 @@ interface LiveState {
 
 const CONSOLE_LIMIT = 1400;
 const STATUS_LIMIT = 60;
+const FINISHED_JOB_LIMIT = 50;
+
+function compactJobs(jobs: Record<string, Job>, order: string[]) {
+  let finished = 0;
+  const jobOrder = order.filter((id) => jobs[id] &&
+    (jobs[id].state === 'running' || ++finished <= FINISHED_JOB_LIMIT));
+  return { jobs: Object.fromEntries(jobOrder.map((id) => [id, jobs[id]!])), jobOrder };
+}
 
 export const useLive = create<LiveState>(() => ({
   connection: 'connecting',
@@ -126,8 +134,7 @@ function applySnapshot(data: Record<string, unknown>): void {
     ready: true,
     connection: 'open',
     generation: state.generation + 1,
-    jobs: Object.fromEntries(jobs.map((job) => [job.id, job])),
-    jobOrder: jobs.map((job) => job.id),
+    ...compactJobs(Object.fromEntries(jobs.map((job) => [job.id, job])), jobs.map((job) => job.id)),
     status: (status as StatusItem[] | undefined) ?? [],
     console: consoleData?.lines ?? [],
     consoleCurrent: consoleData?.current ?? '',
@@ -146,18 +153,18 @@ export function applyEvent(type: string, data: unknown): void {
       break;
     case 'job': {
       const job = data as Job;
-      useLive.setState((state) => ({
-        jobs: { ...state.jobs, [job.id]: job },
-        jobOrder: state.jobOrder.includes(job.id) ? state.jobOrder : [job.id, ...state.jobOrder],
-      }));
+      useLive.setState((state) => compactJobs(
+        { ...state.jobs, [job.id]: job },
+        state.jobOrder.includes(job.id) ? state.jobOrder : [job.id, ...state.jobOrder],
+      ));
       break;
     }
     case 'status':
       useLive.setState((state) => ({ status: [...state.status, data as StatusItem].slice(-STATUS_LIMIT) }));
       break;
     case 'console': {
-      const batch = data as { lines: ConsoleLine[]; current: string };
-      useLive.setState((state) => ({ console: mergeConsole(state.console, batch.lines), consoleCurrent: batch.current }));
+      const batch = data as { lines: ConsoleLine[]; current: string; reset?: boolean };
+      useLive.setState((state) => ({ console: mergeConsole(batch.reset ? [] : state.console, batch.lines), consoleCurrent: batch.current }));
       break;
     }
     case 'training':
@@ -172,6 +179,8 @@ export function applyEvent(type: string, data: unknown): void {
     case 'settings':
       useLive.setState({ settings: data as Settings });
       break;
+    case 'heartbeat':
+      break;
     default:
       useLive.setState((state) => ({ extra: { ...state.extra, [type]: data } }));
   }
@@ -179,17 +188,22 @@ export function applyEvent(type: string, data: unknown): void {
 }
 
 let source: EventSource | null = null;
+if (import.meta.hot) import.meta.hot.dispose(() => source?.close());
 
 /** Open (or reopen, e.g. after a language change) the event stream. */
 export function connectLive(): () => void {
   source?.close();
   const es = new EventSource(`/api/events?lang=${encodeURIComponent(getLanguage())}`);
   source = es;
-  es.onopen = () => useLive.setState({ connection: 'open' });
+  useLive.setState((state) => ({ connection: state.ready ? 'reconnecting' : 'connecting' }));
+  es.onopen = () => {
+    if (source === es) useLive.setState({ connection: 'open' });
+  };
   es.onerror = () => {
     if (source === es) useLive.setState({ connection: 'reconnecting' });
   };
   es.onmessage = (message) => {
+    if (source !== es) return; // A closing stream may still deliver a queued old-language event.
     try {
       const event = JSON.parse(message.data as string) as { type: string; data: unknown };
       applyEvent(event.type, event.data);

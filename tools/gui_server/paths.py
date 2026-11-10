@@ -33,8 +33,29 @@ CREATED_DIRS = (MODEL_DIR, OUTPUTS_DIR, VOICES_DIR, EMOTION_DESCRIPTIONS_DIR, CA
 
 
 def ensure_dirs() -> None:
-    for path in CREATED_DIRS:
+    # Read the current directory constants, not an import-time tuple: tests and
+    # standalone demos can redirect paths without touching the user's data.
+    for path in (MODEL_DIR, OUTPUTS_DIR, VOICES_DIR, EMOTION_DESCRIPTIONS_DIR, CACHE_DIR, TEMP_DIR,
+                 TRAINING_PROJECTS_DIR, TRAINING_DATASETS_DIR, TRAINING_OUTPUTS_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def use_data_root(directory: str | Path) -> None:
+    """Redirect mutable demo data without moving shipped assets/code.
+
+    Launcher permits this only with the fake engine. It must be called before
+    importing application services, so no production cache can be reused.
+    """
+    global CREATED_DIRS
+    old_root = ROOT
+    new_root = Path(directory).expanduser().resolve()
+    for name, value in list(globals().items()):
+        if name in {"WEB_DIR", "ASSETS_DIR"} or not isinstance(value, Path):
+            continue
+        if value.is_relative_to(old_root):
+            globals()[name] = new_root / value.relative_to(old_root)
+    CREATED_DIRS = (MODEL_DIR, OUTPUTS_DIR, VOICES_DIR, EMOTION_DESCRIPTIONS_DIR, CACHE_DIR, TEMP_DIR,
+                    TRAINING_PROJECTS_DIR, TRAINING_DATASETS_DIR, TRAINING_OUTPUTS_DIR)
 
 
 def safe_name(value: str) -> str:
