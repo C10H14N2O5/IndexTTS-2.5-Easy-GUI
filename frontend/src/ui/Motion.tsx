@@ -6,7 +6,7 @@ const PAGE_KEYFRAMES: Keyframe[] = [
   { opacity: 1, transform: 'none' },
 ];
 const PAGE_TIMING: KeyframeAnimationOptions = {
-  duration: 220,
+  duration: 400,
   easing: 'cubic-bezier(0.05, 0.7, 0.1, 1)',
   fill: 'none',
 };

@@ -34,7 +34,7 @@ describe('RouteTransition', () => {
     const [frames, timing] = animate.mock.calls[0] as unknown as [Keyframe[], KeyframeAnimationOptions];
     expect(frames[0]).toMatchObject({ opacity: 0 });
     expect(frames[1]).toMatchObject({ opacity: 1, transform: 'none' });
-    expect(timing).toMatchObject({ duration: 220, fill: 'none' });
+    expect(timing).toMatchObject({ duration: 400, fill: 'none' });
     rerender(<RouteTransition scope="/library"><p>Page</p></RouteTransition>);
     expect(animate).toHaveBeenCalledTimes(1);
   });

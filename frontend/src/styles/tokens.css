@@ -64,7 +64,7 @@
   --duration-medium: 200ms;
   --duration-long: 300ms;
   --duration-emphasized: 400ms;
-  --duration-page: 220ms;
+  --duration-page: 400ms;
   --page-shift: 8px;
 
   /* State layer opacities */

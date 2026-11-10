@@ -65,7 +65,7 @@ pnpm --dir frontend dev
 
 排版使用 `--content-max` 内的 12 栏文字网格（`--grid-columns`、`--grid-gutter`）。页面统一使用 `PageHeader`：所属导航分组由 `AppShell` 通过 `PageEyebrow` 提供，标题/导语占 1–8 栏，操作按钮占 9–12 栏。`Section` 默认 `layout="tile"`（浅灰圆角块，用于合成、校对、训练等工作区）；设置和说明型内容使用 `layout="aside"`（细线分隔，标题列 1–4 栏、内容 5–12 栏，1200px 以下上下堆叠）。新增页面的分栏也应落在 12 栏上，例如 8/4 或 7/5。
 
-页面过渡由 `ui/Motion.tsx` 的 `RouteTransition` 负责：`scope` 改变时用 Web Animations API 播放 220ms 淡入上移，不使用 `key`，因此不会重新挂载子组件或丢失草稿。`AppShell` 以页面路径为 scope（项目工作台整体视为一页），`ProjectLayout` 以标签页为 scope。减少动态效果或不支持该 API 时直接跳过。
+页面过渡由 `ui/Motion.tsx` 的 `RouteTransition` 负责：`scope` 改变时用 Web Animations API 播放 400ms 淡入上移，不使用 `key`，因此不会重新挂载子组件或丢失草稿。`AppShell` 以页面路径为 scope（项目工作台整体视为一页），`ProjectLayout` 以标签页为 scope。减少动态效果或不支持该 API 时直接跳过。
 
 ## 安全边界
 
