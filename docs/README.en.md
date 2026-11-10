@@ -4,10 +4,6 @@
 
 A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). Clone a voice from reference audio and synthesize speech; you can also prepare your own speech corpus, fine-tune a LoRA, and export the result for ComfyUI.
 
-> **2.0 feature-branch preview, not yet released on main.** The React + TypeScript / FastAPI interface offers progressive settings, live task progress, cancellation feedback, light/dark themes and instant Chinese/English switching. Dataset proofreading, validation, training charts and outputs are grouped by project.
->
-> Existing launchers, data formats and ZIP updates are preserved. End users do not need Node.js or a Python environment reinstall. Detailed guides are in Chinese; real GPU checks are listed in the [acceptance checklist](webui-acceptance.md).
-
 ![English dark interface, using isolated fake-engine demonstration data](<../assets/webui-2-dark.png>)
 
 ## Features
