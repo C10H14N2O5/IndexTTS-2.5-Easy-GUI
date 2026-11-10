@@ -2,20 +2,16 @@ from __future__ import annotations
 import json, threading, time, subprocess, sys, webbrowser
 from pathlib import Path
 
-def _play_done_sound():
-    if __import__('os').name != 'nt': return
-    try:
-        import winsound
-        root=Path(__file__).resolve().parents[1]
-        candidates=[root/'assets'/'inference_training_done.wav', root/'assets'/'chime.wav', root/'assets'/'inference_complete.wav']
-        wav=next((x for x in candidates if x.is_file()),None)
-        if wav: winsound.PlaySound(str(wav),winsound.SND_FILENAME|winsound.SND_ASYNC)
-    except Exception: pass
 
 class TrainingManager:
     def __init__(self):
         self.lock=threading.RLock(); self.thread=None; self.stop_event=threading.Event(); self.tensorboard=None; self.tensorboard_logdir=None
-        self.state={'running':False,'failed':False,'step':0,'total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':''}
+        # The GUI installs a fake trainer for development; None = indextts_training.trainer.train_lora.
+        self.train_fn=None
+        # Optional completion hook (the web GUI notifies browsers instead of playing a sound on the server).
+        self.on_finished=None
+        self.state={'running':False,'failed':False,'step':0,'total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':'',
+                    'started_at':None,'finished_at':None,'output_dir':'','project':'','adapter':''}
     def _update(self,**kw):
         with self.lock: self.state.update({k:v for k,v in kw.items() if v is not None})
     def snapshot(self):
@@ -41,16 +37,27 @@ class TrainingManager:
         if self.thread and self.thread.is_alive(): raise RuntimeError('Training is already running.')
         from .activity import acquire, release
         activity_token = acquire('training')
-        self.stop_event.clear(); self._update(running=True,failed=False,step=0,total=0,message='Starting experimental LoRA training…',output='')
+        self.stop_event.clear()
+        with self.lock:
+            # Assign directly: _update() ignores None, which used to leave the previous
+            # run's loss/epoch/ETA visible until the first step of the new run.
+            self.state.update(running=True,failed=False,step=0,total=0,epoch=0,loss=None,elapsed=0.0,eta=0.0,
+                              message='Starting experimental LoRA training…',output='',started_at=time.time(),finished_at=None,
+                              output_dir=str(config.get('output_dir') or ''),project=str(config.get('project') or ''),
+                              adapter=Path(str(config.get('output_dir') or '')).name)
         def worker():
+            outcome='failed'
             try:
                 # Keep the GUI and dataset-preparation tab usable when the
                 # optional CUDA/PyTorch runtime is unavailable or broken.
-                from .trainer import train_lora
+                train_lora=self.train_fn
+                if train_lora is None:
+                    from .trainer import train_lora
                 result=train_lora(config,self._update,self.stop_event)
-                self._update(running=False,output=result.get('output',''),message='Training stopped.' if result.get('stopped') else 'Training complete.'); _play_done_sound()
+                outcome='stopped' if result.get('stopped') else 'succeeded'
+                self._update(running=False,output=result.get('output',''),finished_at=time.time(),message='Training stopped.' if result.get('stopped') else 'Training complete.')
             except Exception as exc:
-                import traceback; traceback.print_exc(); self._update(running=False,failed=True,message=f'Training failed: {type(exc).__name__}: {exc}')
+                import traceback; traceback.print_exc(); self._update(running=False,failed=True,finished_at=time.time(),message=f'Training failed: {type(exc).__name__}: {exc}')
                 # A failed CUDA step can otherwise leave the large GPT/Whisper
                 # teacher cached in the GUI process, making the next retry
                 # fail with an unrelated out-of-memory error.
@@ -62,6 +69,10 @@ class TrainingManager:
                     pass
             finally:
                 release(activity_token)
+                hook=self.on_finished
+                if hook is not None:
+                    try: hook(outcome,self.snapshot())
+                    except Exception: pass
         try:
             if config.get('output_dir'):
                 from .dataset import _atomic_write
@@ -94,7 +105,7 @@ class TrainingManager:
         except Exception:
             pass
 
-    def start_tensorboard(self,logdir,port=6006,force_restart=False):
+    def start_tensorboard(self,logdir,port=6006,force_restart=False,open_browser=True):
         logdir=str(Path(logdir).resolve())
         url=f'http://127.0.0.1:{port}'
         with self.lock:
@@ -116,12 +127,12 @@ class TrainingManager:
                 message=f'TensorBoard started on {url}; live log reload enabled.'
             else:
                 message=f'TensorBoard is live on {url}; monitoring updated event files.'
-        # Re-open the same stable URL when the user resumes or returns to the
-        # training tab. This does not restart or rewrite any training log.
-        webbrowser.open(url)
+        # The web GUI opens the URL in the user's browser tab instead (open_browser=False).
+        if open_browser:
+            webbrowser.open(url)
         return message
 
-    def reload_tensorboard(self,logdir,port=6006):
+    def reload_tensorboard(self,logdir,port=6006,open_browser=True):
         """Force-refresh the selected training workspace viewer only."""
-        return self.start_tensorboard(logdir,port,force_restart=True)
+        return self.start_tensorboard(logdir,port,force_restart=True,open_browser=open_browser)
 TRAINING_MANAGER=TrainingManager()

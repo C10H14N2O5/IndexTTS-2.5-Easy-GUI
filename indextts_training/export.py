@@ -86,8 +86,10 @@ def _filename(value: str) -> str:
 
 
 class ExportManager:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, script: Path | None = None):
         self.root = Path(root).resolve()
+        # Development fakes inject a stand-in merge script; production uses merge_lora_to_pth.py.
+        self.script = Path(script) if script else self.root / 'tools' / 'merge_lora_to_pth.py'
         self.lock = threading.RLock()
         self.thread = None
         self.process = None
@@ -153,7 +155,7 @@ class ExportManager:
                 self.started = time.monotonic()
                 self.state = dict(status='running', phase='starting', elapsed=0.0, log='', output=str(output),
                                   error='', report={}, token=secrets.token_urlsafe(32), task_id=task_id, logfile=str(logfile))
-                command = [sys.executable, '-B', '-u', str(self.root / 'tools' / 'merge_lora_to_pth.py'),
+                command = [sys.executable, '-B', '-u', str(self.script),
                            '--adapter', str(adapter_path), '--base', str(base_path), '--config', str(config_path),
                            '--output', str(staging / output.name)]
                 if expected:

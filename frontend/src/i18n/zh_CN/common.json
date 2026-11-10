@@ -1,0 +1,23 @@
+{
+  "IndexTTS Easy GUI": "IndexTTS Easy GUI",
+  "Cannot reach the GUI server. Check that the console window is still running.": "无法连接 GUI 服务，请确认控制台窗口仍在运行。",
+  "Request failed ({0}).": "请求失败（{0}）。",
+  "Upload failed.": "上传失败。",
+  "Cannot start the interface": "界面启动失败",
+  "Create": "创作",
+  "Synthesis": "语音合成",
+  "Voice library": "音色库",
+  "Train": "训练",
+  "Projects": "训练项目",
+  "Blind A/B": "盲测对比",
+  "Export": "导出",
+  "System": "系统",
+  "Main navigation": "主导航",
+  "Starting IndexTTS Easy GUI…": "正在启动 IndexTTS Easy GUI…",
+  "Retry": "重试",
+  "This page failed to load": "页面加载失败",
+  "Corpus": "语料",
+  "Outputs": "输出文件",
+  "Training": "训练",
+  "Validation": "验证集"
+}

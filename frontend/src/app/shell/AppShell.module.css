@@ -1,0 +1,57 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  min-height: 100%;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: var(--space-5) var(--space-3);
+  background: var(--color-surface-2);
+  border-right: 1px solid var(--color-separator-soft);
+}
+
+.brand {
+  padding: 0 var(--space-3) var(--space-5);
+  font: var(--type-headline);
+}
+
+.group {
+  margin-bottom: var(--space-5);
+}
+
+.groupLabel {
+  padding: 0 var(--space-3) var(--space-2);
+  color: var(--color-text-2);
+  font: var(--type-caption);
+}
+
+.link,
+.active {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 36px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font: var(--type-label);
+}
+
+.link:hover {
+  text-decoration: none;
+  background: color-mix(in srgb, var(--color-text) var(--state-hover), transparent);
+}
+
+.active {
+  text-decoration: none;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+
+.main {
+  min-width: 0;
+  padding: var(--space-6) var(--page-margin);
+}
