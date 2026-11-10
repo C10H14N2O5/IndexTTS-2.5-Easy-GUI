@@ -7,7 +7,7 @@ const PAGE_KEYFRAMES: Keyframe[] = [
 ];
 const PAGE_TIMING: KeyframeAnimationOptions = {
   duration: 400,
-  easing: 'cubic-bezier(0.05, 0.7, 0.1, 1)',
+  easing: 'cubic-bezier(0.25, 0.1, 0.25, 1)',
   fill: 'none',
 };
 
