@@ -22,7 +22,7 @@ A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). 
 - An NVIDIA GPU and driver for inference and training; speech recognition and checkpoint merging compute on the CPU
 - Internet access for the first install and the first launch
 
-The maintainer used the following hardware with the previous interface. It is a reference point, not a minimum requirement; the 2.0 feature branch still requires the real-GPU acceptance checks:
+The maintainer used the following hardware with the previous interface. It is a reference point, not a minimum requirement:
 
 | CPU | RAM | GPU |
 | --- | --- | --- |
