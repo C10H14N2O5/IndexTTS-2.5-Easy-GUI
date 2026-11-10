@@ -1,0 +1,126 @@
+/*
+ * Design tokens. Swiss / Apple restraint: one accent, neutral surfaces,
+ * hierarchy through type and space rather than colour. Material state layers
+ * (hover 8%, focus 10%, press 10%, drag 16%) are applied with color-mix().
+ */
+:root {
+  /* Typography */
+  --font-sans: 'Inter Variable', 'Microsoft YaHei UI', 'PingFang SC', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, 'SFMono-Regular', ui-monospace, monospace;
+
+  --type-display: 600 34px/40px var(--font-sans);
+  --type-title: 600 24px/32px var(--font-sans);
+  --type-headline: 600 19px/26px var(--font-sans);
+  --type-body: 400 15px/24px var(--font-sans);
+  --type-body-strong: 500 15px/24px var(--font-sans);
+  --type-label: 500 13px/18px var(--font-sans);
+  --type-caption: 400 12px/16px var(--font-sans);
+  --type-mono: 400 12.5px/18px var(--font-mono);
+  --tracking-display: -0.022em;
+  --tracking-title: -0.015em;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Layout */
+  --content-max: 1200px;
+  --gutter: 24px;
+  --page-margin: 32px;
+  --sidebar-width: 240px;
+  --sidebar-collapsed: 64px;
+  --topbar-height: 56px;
+  --control-height: 40px;
+  --control-height-compact: 32px;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --duration-short: 100ms;
+  --duration-medium: 200ms;
+  --duration-long: 300ms;
+  --duration-emphasized: 400ms;
+
+  /* State layer opacities */
+  --state-hover: 8%;
+  --state-focus: 10%;
+  --state-press: 10%;
+  --state-drag: 16%;
+  --disabled-container: 12%;
+  --disabled-content: 38%;
+
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+  --z-sidebar: 20;
+  --z-topbar: 30;
+  --z-drawer: 40;
+  --z-popover: 50;
+  --z-dialog: 60;
+  --z-toast: 70;
+}
+
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-surface-2: #f5f5f7;
+  --color-surface-3: #fbfbfd;
+  --color-text: #1d1d1f;
+  --color-text-2: #6e6e73;
+  /* Caption hierarchy uses size and spacing, not unreadably low contrast. */
+  --color-text-3: #6e6e73;
+  --color-separator: #d2d2d7;
+  --color-separator-soft: #e8e8ed;
+  --color-accent: #0071e3;
+  --color-on-accent: #ffffff;
+  --color-on-error: #ffffff;
+  --color-success: #248a3d;
+  --color-warning: #b25000;
+  --color-error: #d70015;
+  --color-overlay: rgb(0 0 0 / 40%);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 6%), 0 1px 1px rgb(0 0 0 / 4%);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 8%), 0 1px 3px rgb(0 0 0 / 6%);
+  --shadow-3: 0 12px 40px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 8%);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --color-bg: #000000;
+  --color-surface-2: #1c1c1e;
+  --color-surface-3: #2c2c2e;
+  --color-text: #f5f5f7;
+  --color-text-2: #a1a1a6;
+  --color-text-3: #96969b;
+  --color-separator: #38383a;
+  --color-separator-soft: #2c2c2e;
+  --color-accent: #2997ff;
+  --color-on-accent: #001b36;
+  --color-on-error: #240000;
+  --color-success: #30d158;
+  --color-warning: #ff9f0a;
+  --color-error: #ff453a;
+  --color-overlay: rgb(0 0 0 / 60%);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 50%), 0 0 0 1px rgb(255 255 255 / 6%);
+  --shadow-3: 0 12px 40px rgb(0 0 0 / 60%), 0 0 0 1px rgb(255 255 255 / 8%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-short: 0ms;
+    --duration-medium: 0ms;
+    --duration-long: 0ms;
+    --duration-emphasized: 0ms;
+  }
+}

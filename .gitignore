@@ -69,3 +69,8 @@ training/outputs/
 # Task-owned staging directories for interrupted checkpoint exports.
 **/.gpt-export-*/
 **/.lora-export-*/
+
+# Web front-end sources: dependencies and caches stay local; the build is committed to tools/gui_web.
+/frontend/node_modules/
+/frontend/coverage/
+*.tsbuildinfo

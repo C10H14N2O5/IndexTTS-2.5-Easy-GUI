@@ -1,164 +1,198 @@
-"""Exercise GUI export contracts without importing the model-heavy Gradio app."""
+"""Export UI contracts at the real FastAPI/service boundary (no Gradio AST).
+
+The old adapter-info, mode, start/cancel and snapshot callback cases now exercise
+HTTP plus the real ExportManager/fake subprocess. Browser-only visibility and
+Save-dialog cancellation belong to the React export/FileBrowser tests;
+the API guarantees browsing/info/status never starts or changes an export.
+"""
 from __future__ import annotations
 
-import ast
 import json
+import subprocess
+import time
 from pathlib import Path
-import tempfile
-from types import SimpleNamespace
-import unittest
-from unittest.mock import Mock
+from unittest.mock import patch
+
+from gui_api_support import GuiApiTestCase
+from tools.gui_server import paths
+from tools.gui_server.fake import _write_adapter
 
 
-ROOT = Path(__file__).resolve().parents[1]
-HELPERS = {
-    "checkpoint_export_adapter_info", "select_checkpoint_export_adapter",
-    "checkpoint_export_mode_visibility", "browse_checkpoint_export_destination",
-    "checkpoint_export_values", "checkpoint_export_snapshot",
-    "start_checkpoint_export", "cancel_checkpoint_export",
-}
-
-
-class ExportGuiTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        tree = ast.parse((ROOT / "easy_gui.py").read_text(encoding="utf-8"))
-        cls.module = ast.Module(body=[node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name in HELPERS], type_ignores=[])
-        cls.code = compile(cls.module, "export_gui_helpers", "exec")
-
+class ExportGuiTests(GuiApiTestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="export_gui_test_")
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.model_dir = self.root / "current-model"
-        self.model_dir.mkdir()
-        self.details = Mock(return_value={"valid": True, "filename": "voice_step100.pth",
-                                         "training_base": "", "error": ""})
-        self.picker = Mock(return_value=("", ""))
-        self.manager = SimpleNamespace(
-            start=Mock(return_value={"status": "running", "phase": "starting"}),
-            snapshot=Mock(return_value={"status": "idle"}),
-            cancel=Mock(return_value={"status": "cancelling", "phase": "saving"}),
-        )
-        self.scope = {
-            "Path": Path, "MODEL_DIR": self.model_dir, "OUTPUTS_DIR": self.root / "outputs",
-            "NONE_SENTINEL": "__NONE__", "EXPORT_MANAGER": self.manager,
-            "adapter_details": self.details, "choose_export_path": self.picker,
-            "t": lambda text, *args: text.format(*args),
-            "gr": SimpleNamespace(update=lambda **kwargs: kwargs, Error=ValueError),
-        }
-        exec(self.code, self.scope)
+        super().setUp()
+        self.adapter = paths.TRAINING_OUTPUTS_DIR / 'voice' / 'checkpoint-step-000100'
+        _write_adapter(self.adapter, {'rank': 16, 'alpha': 32})
+        self.model_dir = self.state.extras['model_dir']
 
-    def call(self, name, *args):
-        return self.scope[name](*args)
+    def info(self, adapter=None):
+        response = self.client.get('/api/export/adapter-info', params={'adapter': str(self.adapter) if adapter is None else adapter})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def finish(self):
+        self.wait_until(lambda: self.state.export.snapshot()['status'] not in ('running', 'cancelling'), timeout=20)
+        self.state.export.thread.join(10)
+        return self.client.get('/api/export/status').json()
 
     def test_recorded_training_directory_is_metadata_not_a_base_checkpoint(self):
-        historical = self.root / "historical-model-directory"
+        historical = self.root / 'historical-model-directory'
         historical.mkdir()
-        (historical / "gpt.pth").write_bytes(b"historical placeholder")
-        self.details.return_value["training_base"] = str(historical)
-        filename, base, notice = self.call("checkpoint_export_adapter_info", "adapter")
-        self.assertEqual(filename, "voice_step100.pth")
-        self.assertEqual(base, str(self.model_dir / "gpt.pth"))
-        self.assertIn(str(historical), notice)
-        self.assertIn("does not verify", notice)
-        self.assertNotIn("unavailable", notice)
-        # A moved/deleted historical directory is still metadata, not an error
-        # or permission to silently substitute a different model.
-        self.details.return_value["training_base"] = str(self.root / "missing-old-model")
-        _, missing_base, missing_notice = self.call("checkpoint_export_adapter_info", "adapter")
-        self.assertEqual(missing_base, base)
-        self.assertIn("does not verify", missing_notice)
+        (historical / 'gpt.pth').write_bytes(b'historical placeholder')
+        training_config = self.adapter.parent / 'training_config.json'
+        for recorded in [historical, self.root / 'missing-old-model']:
+            with self.subTest(recorded=str(recorded)):
+                training_config.write_text(json.dumps({'model_dir': str(recorded)}), encoding='utf-8')
+                data = self.info()
+                self.assertEqual(data['filename'], 'voice_checkpoint-step-000100.pth')
+                self.assertEqual(data['training_base'], str(recorded))
+                self.assertEqual(data['base'], str(self.model_dir / 'gpt.pth'))
+                self.assertEqual(data['config'], str(self.model_dir / 'config.yaml'))
+                self.assertIn(str(recorded), data['notice'])
+                self.assertIn('does not verify', data['notice'])
+                self.assertNotIn('unavailable', data['notice'])
+        self.assertEqual(self.state.export.snapshot()['status'], 'idle')
 
     def test_adapter_selection_and_no_selection(self):
-        selected = self.call("select_checkpoint_export_adapter", "chosen-adapter")
-        self.assertEqual(selected[:2], ("chosen-adapter", "voice_step100.pth"))
-        self.assertEqual(self.call("select_checkpoint_export_adapter", "__NONE__")[0], "")
-        self.details.return_value.update(valid=False, error="Missing adapter weights")
-        self.assertEqual(self.call("checkpoint_export_adapter_info", "broken")[2], "Missing adapter weights")
+        self.assertTrue(self.info()['valid'])
+        for selection in ['', '__NONE__', str(self.root / 'missing-adapter')]:
+            with self.subTest(selection=selection):
+                invalid = self.info(selection)
+                self.assertFalse(invalid['valid'])
+                self.assertTrue(invalid['error'])
+                self.assertEqual(invalid['notice'], invalid['error'])
+        self.assertEqual(self.state.export.snapshot()['status'], 'idle')
 
-    def test_save_dialog_cancellation_and_failure_do_not_change_path_or_start_export(self):
-        current = str(self.root / "chosen.pth")
-        value, notice = self.call("browse_checkpoint_export_destination", current, "unused.pth")
-        self.assertEqual(value, {})
-        self.assertIn("cancelled", notice)
-        self.manager.start.assert_not_called()
-        self.picker.return_value = (current, "Desktop dialog unavailable")
-        value, notice = self.call("browse_checkpoint_export_destination", current, "unused.pth")
-        self.assertEqual(value, {})
-        self.assertEqual(notice, "Desktop dialog unavailable")
-        self.manager.start.assert_not_called()
+    def test_browser_and_path_modes_are_explicit_and_browsing_is_read_only(self):
+        schema = self.app.openapi()['components']['schemas']['ExportStart']
+        self.assertEqual(schema['properties']['mode']['enum'], ['browser', 'path'])
+        with patch.object(self.state.export, 'start', wraps=self.state.export.start) as start:
+            self.assertEqual(self.client.get('/api/fs/list', params={'path': str(self.root), 'kind': 'pth'}).status_code, 200)
+            self.info()
+            self.assertEqual(self.client.get('/api/fs/list', params={'path': str(self.root / 'not-found')}).status_code, 404)
+            self.assertEqual(self.client.get('/api/export/status').json()['status'], 'idle')
+            self.assertEqual(self.state.export.snapshot()['output'], '')
+            start.assert_not_called()
+        for mode, destination in [('path', 'relative.pth'), ('path', ''), ('browser', None), ('browser', '../escape.pth'), ('desktop', 'export.pth')]:
+            response = self.client.post('/api/export/start', json={'adapter': str(self.adapter), 'mode': mode, 'destination': destination})
+            self.assertEqual(response.status_code, 400, response.text)
+        output = self.root / 'exports chosen by user' / 'voice.pth'
+        response = self.client.post('/api/export/start', json={'adapter': str(self.adapter), 'mode': 'path', 'destination': str(output)})
+        self.assertEqual(response.status_code, 202, response.text)
+        done = self.finish()
+        self.assertEqual(done['status'], 'succeeded', done)
+        self.assertEqual(Path(done['output']), output)
+        self.assertTrue(output.is_file())
+        self.assertTrue(output.with_suffix('.merge.json').is_file())
 
-    def test_start_routes_browser_filename_and_explicit_server_path(self):
-        self.call("start_checkpoint_export", "adapter", "browser", "voice.pth", "ignored.pth", "base", "config", "")
-        self.manager.start.assert_called_with("adapter", "browser", "voice.pth", "base", "config", "")
-        destination = str(self.root / "chosen.pth")
-        self.call("start_checkpoint_export", "adapter", "path", "ignored.pth", destination, "base", "config", "deployment-base")
-        self.manager.start.assert_called_with("adapter", "path", destination, "base", "config", "deployment-base")
-        for args in (("", "browser", "voice.pth", "", "", "", ""),
-                     ("adapter", "browser", None, "", "", "", ""),
-                     ("adapter", "path", "voice.pth", "", "", "", "")):
-            with self.subTest(args=args), self.assertRaises(ValueError):
-                self.call("start_checkpoint_export", *args)
+    def test_explicit_base_and_expected_base_are_forwarded_without_cpu_fallback(self):
+        chosen_base = self.root / 'custom_fp32.pth'
+        chosen_base.write_bytes(b'user selected source')
+        expected = self.root / 'expected_training_base.pth'
+        expected.write_bytes(b'user selected identity target')
+        config = self.root / 'custom_config.yaml'
+        config.write_text('fake: true\n', encoding='utf-8')
+        # Adapter metadata/info are suggestions, never authority over an explicit choice.
+        (self.adapter.parent / 'training_config.json').write_text(json.dumps({'model_dir': str(self.root / 'moved')}), encoding='utf-8')
+        self.info()
+        with patch('indextts_training.export.subprocess.Popen', wraps=subprocess.Popen) as spawn:
+            response = self.client.post('/api/export/start', json={
+                'adapter': str(self.adapter), 'mode': 'browser', 'destination': 'explicit.pth',
+                'base': str(chosen_base), 'config': str(config), 'expected_base': str(expected)})
+            self.assertEqual(response.status_code, 202, response.text)
+            done = self.finish()
+        self.assertEqual(done['status'], 'succeeded', done)
+        command = spawn.call_args.args[0]
+        for flag, expected_path in [('--adapter', self.adapter), ('--base', chosen_base),
+                                    ('--config', config), ('--expected-base', expected)]:
+            self.assertEqual(Path(command[command.index(flag) + 1]), expected_path)
+        self.assertEqual(spawn.call_args.kwargs['env']['CUDA_VISIBLE_DEVICES'], '')
+        self.assertNotIn('--skip-cpu-forward', command)
+        self.assertEqual(done['report']['base'], str(chosen_base))
+        self.assertEqual(done['report']['config'], str(config))
+        self.assertEqual(chosen_base.read_bytes(), b'user selected source')
+        self.assertEqual(expected.read_bytes(), b'user selected identity target')
 
-    def test_failed_cancelled_and_running_tasks_never_show_download_links(self):
-        for status in ("idle", "running", "cancelling", "failed", "cancelled"):
+    def test_missing_explicit_base_never_falls_back_to_default(self):
+        for field in ['base', 'expected_base']:
+            with self.subTest(field=field):
+                response = self.client.post('/api/export/start', json={
+                    'adapter': str(self.adapter), 'destination': 'voice.pth',
+                    field: str(self.root / 'does-not-exist.pth')})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn('does-not-exist.pth', response.json()['error']['message'])
+                self.assertEqual(self.state.export.snapshot()['status'], 'idle')
+
+    def test_running_finished_and_cancelled_state_control_downloads(self):
+        response = self.client.post('/api/export/start', json={'adapter': str(self.adapter), 'destination': 'voice.pth'})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.json()['status'], 'running')
+        self.assertEqual(response.json()['downloads'], {})
+        self.assertEqual(self.client.post('/api/export/start', json={'adapter': str(self.adapter)}).status_code, 409)
+        cancelled = self.client.post('/api/export/cancel')
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertIn(cancelled.json()['status'], ('cancelling', 'cancelled'))
+        self.assertEqual(cancelled.json()['downloads'], {})
+        done = self.finish()
+        self.assertEqual(done['status'], 'cancelled', done)
+        self.assertEqual(done['downloads'], {})
+        self.assertFalse(Path(response.json()['output']).exists())
+        self.assertEqual(self.client.post('/api/export/start', json={'adapter': str(self.adapter), 'destination': 'again.pth'}).status_code, 202)
+        done = self.finish()
+        self.assertEqual(done['status'], 'succeeded', done)
+        self.assertEqual(set(done['downloads']), {'model', 'report'})
+        for url in done['downloads'].values():
+            self.assertEqual(self.client.get(url).status_code, 200)
+        # Keep every original terminal/active-state case, including diagnostic
+        # text. Completed download records must not leak into a newer failure.
+        for status in ('idle', 'running', 'cancelling', 'failed', 'cancelled'):
             with self.subTest(status=status):
-                rendered = self.call("checkpoint_export_values", {
-                    "status": status, "phase": "saving", "task_id": "some-task", "token": "secret",
-                    "output": "model.pth", "error": "Full diagnostic text" if status == "failed" else "",
-                })
-                self.assertEqual(rendered[3], "")
-                self.assertEqual(rendered[4]["interactive"], status not in ("running", "cancelling"))
-                self.assertEqual(rendered[5]["interactive"], status == "running")
-                if status == "failed":
-                    self.assertIn("Full diagnostic text", rendered[0])
+                with self.state.export.lock:
+                    self.state.export.state.update(status=status, error='Full diagnostic text' if status == 'failed' else '')
+                data = self.client.get('/api/export/status').json()
+                self.assertEqual(data['status'], status)
+                self.assertEqual(data['downloads'], {})
+                if status == 'failed':
+                    self.assertIn('Full diagnostic text', data['error'])
 
-    def test_success_links_are_scoped_encoded_and_escape_filename(self):
-        rendered = self.call("checkpoint_export_values", {
-            "status": "succeeded", "phase": "completed", "task_id": "id/with space",
-            "token": 'token"<>', "output": 'model"><script>.pth',
-        })
-        links = rendered[3]
-        self.assertIn("/exports/id%2Fwith%20space/model?token=token%22%3C%3E", links)
-        self.assertIn("/exports/id%2Fwith%20space/report?token=token%22%3C%3E", links)
-        self.assertNotIn("<script>", links)
-        self.assertIn("&quot;&gt;&lt;script&gt;", links)
-        self.assertEqual(links.count("<a "), 2)
+    def test_snapshot_urls_are_encoded_and_json_keeps_untrusted_values_as_data(self):
+        with self.state.export.lock:
+            self.state.export.state.update(status='succeeded', phase='completed',
+                output='model"><script>.pth', task_id='id/with space', token='tok&"',
+                report={'base_sha256': 'a' * 64, 'output_sha256': 'b' * 64, 'tensor_count': 456,
+                        'lora_target_count': 96, 'changed_tensor_count': 96, 'rank': 4, 'alpha': 8, 'dtype': 'float32',
+                        'cpu_forward_max_abs_difference': 0, 'elapsed_seconds': .1,
+                        'source_files_unchanged': True, 'round_trip_tensors_identical': False})
+        response = self.client.get('/api/export/status')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.headers['content-type'].startswith('application/json'))
+        data = response.json()
+        self.assertEqual(data['output'], 'model"><script>.pth')
+        self.assertEqual(data['downloads']['model'], '/exports/id%2Fwith%20space/model?token=tok%26%22')
+        self.assertEqual(data['downloads']['report'], '/exports/id%2Fwith%20space/report?token=tok%26%22')
+        for key, value in self.state.export.snapshot()['report'].items():
+            self.assertEqual(data['report'][key], value)
+        self.assertIs(data['report']['round_trip_tensors_identical'], False)
+        with self.state.export.lock:
+            self.state.export.state['report'] = {}
+        self.assertEqual(self.client.get('/api/export/status').json()['report'], {})
 
-    def test_success_summary_uses_report_evidence_and_does_not_invent_verification(self):
-        report = {
-            "tensor_count": 456, "lora_target_count": 96, "changed_tensor_count": 96,
-            "base_sha256": "a" * 64, "output_sha256": "b" * 64,
-            "cpu_forward_max_abs_difference": 2e-6, "source_files_unchanged": True,
-            "round_trip_tensors_identical": True,
-        }
-        rendered = self.call("checkpoint_export_values", {"status": "succeeded", "phase": "completed", "report": report})
-        self.assertIn("Validated tensors: 456", rendered[0])
-        self.assertIn("LoRA targets: 96", rendered[0])
-        self.assertIn("a" * 64, rendered[0])
-        self.assertIn("b" * 64, rendered[0])
-        self.assertIn("Source files unchanged: Yes", rendered[0])
-        self.assertIn("Saved tensors identical: Yes", rendered[0])
-        del report["source_files_unchanged"]
-        del report["round_trip_tensors_identical"]
-        partial = self.call("checkpoint_export_values", {"status": "succeeded", "report": report})
-        self.assertIn("Source files unchanged: Not verified", partial[0])
-        self.assertIn("Saved tensors identical: Not verified", partial[0])
-
-    def test_stage_labels_and_chinese_translations_are_present(self):
-        translations = json.loads((ROOT / "tools/i18n/locale/easy_gui_zh_CN.json").read_text(encoding="utf-8"))
-        for node in ast.walk(self.module):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "t"
-                    and node.args and isinstance(node.args[0], ast.Constant)):
-                self.assertIn(node.args[0].value, translations)
-        for phase in ("idle", "starting", "hashing", "building", "checking", "saving", "verifying", "publishing", "completed"):
+    def test_all_phases_preserve_codes_and_chinese_notice_translation(self):
+        phases = ('idle', 'starting', 'hashing', 'building', 'checking', 'saving', 'verifying', 'publishing', 'completed')
+        for phase in phases:
             with self.subTest(phase=phase):
-                rendered = self.call("checkpoint_export_values", {"status": "running", "phase": phase, "elapsed": 1.25})
-                self.assertIn("Elapsed 1.2s", rendered[0])
-                self.assertNotIn(f" · {phase} · ", rendered[0])
-
-
-if __name__ == "__main__":
-    unittest.main()
+                with self.state.export.lock:
+                    self.state.export.state.update(status='running', phase=phase)
+                    self.state.export.started = time.monotonic() - 1.25
+                response = self.client.get('/api/export/status')
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['phase'], phase)
+                self.assertGreaterEqual(response.json()['elapsed'], 1.2)
+                self.assertEqual(response.json()['downloads'], {})
+        with self.state.export.lock:
+            self.state.export.state.update(status='idle', phase='idle')
+        (self.adapter.parent / 'training_config.json').write_text(json.dumps({'model_dir': '历史路径'}), encoding='utf-8')
+        chinese = self.client.get('/api/export/adapter-info', params={'adapter': str(self.adapter)}, headers={'X-UI-Language': 'zh_CN'}).json()
+        self.assertIn('历史路径', chinese['notice'])
+        self.assertNotIn('does not verify', chinese['notice'])
+        self.assertNotEqual(chinese['notice'], self.info()['notice'])

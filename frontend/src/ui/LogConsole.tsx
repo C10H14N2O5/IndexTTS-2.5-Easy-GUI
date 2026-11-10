@@ -1,0 +1,14 @@
+import { useEffect, useRef, useState } from 'react';
+import { ArrowDown, Copy, Download } from 'lucide-react';
+import { useT } from '@/i18n';
+import { Button, IconButton } from './Controls';
+import { toast } from './toast';
+import s from './Media.module.css';
+export interface LogLine {id:number;text:string;level:string}
+export interface LogConsoleProps {lines:LogLine[];current?:string;height?:number;emptyText?:string}
+export function LogConsole({lines,current='',height=260,emptyText}:LogConsoleProps){const t=useT();const viewport=useRef<HTMLDivElement>(null);const [follow,setFollow]=useState(true);const shown=lines.slice(-1400);useEffect(()=>{if(follow&&viewport.current)viewport.current.scrollTop=viewport.current.scrollHeight;},[lines,current,follow]);
+ const allText=()=>[...shown.map(line=>line.text),current].filter(Boolean).join('\n');
+ async function copy(){try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(allText());else{const node=document.createElement('textarea');node.value=allText();node.style.position='fixed';node.style.opacity='0';document.body.append(node);node.select();const copied=document.execCommand('copy');node.remove();if(!copied)throw new Error();}toast.success(t('Log copied'));}catch{toast.error(t('Could not copy the log. Download it instead.'));}}
+ function download(){const url=URL.createObjectURL(new Blob([allText()],{type:'text/plain;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='indextts-console.log';link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+ return <div className={s.console}><div className={s.consoleToolbar}><span>{t('{0} lines',shown.length)}</span><span className={s.consoleActions}>{!follow&&<Button icon={ArrowDown} variant="tonal" size="sm" onClick={()=>setFollow(true)}>{t('Follow latest')}</Button>}<IconButton icon={Copy} label={t('Copy log')} size="sm" onClick={()=>void copy()} disabled={!shown.length&&!current}/><IconButton icon={Download} label={t('Download log')} size="sm" onClick={download} disabled={!shown.length&&!current}/></span></div><div ref={viewport} className={s.consoleViewport} style={{height}} role="log" aria-label={t('Console log')} aria-live="off" tabIndex={0} onScroll={event=>{const element=event.currentTarget;const atBottom=element.scrollHeight-element.clientHeight-element.scrollTop<36;setFollow(atBottom);}}>{!shown.length&&!current?<div className={s.consoleEmpty}>{emptyText??t('No log output yet.')}</div>:<>{shown.map(line=><div key={line.id} className={s.logLine} data-level={line.level}><span className={s.lineNumber} aria-hidden>{line.id}</span><span>{line.text}</span></div>)}{current&&<div className={s.logLine} data-level="progress"><span className={s.lineNumber} aria-hidden>·</span><span>{current}</span></div>}</>}</div></div>;
+}

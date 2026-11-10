@@ -193,7 +193,7 @@ class ExportTests(unittest.TestCase):
         fake_module = types.ModuleType('indextts_training.trainer')
         fake_module.train_lora = fake_train
         training = TrainingManager()
-        with patch.dict('sys.modules', {'indextts_training.trainer':fake_module}), patch('indextts_training.manager._play_done_sound'):
+        with patch.dict('sys.modules', {'indextts_training.trainer':fake_module}):
             training.start({'manifest':str(self.base), 'project':None})
             try:
                 self.assertTrue(entered.wait(3))

@@ -256,6 +256,19 @@ def dataset_manifest_status(project, root='training', *, role='training'):
         label=role.capitalize()
         if not manifest or not Path(manifest).is_file():
             return dict(result,status='missing',message=f'{label} manifest has not been prepared.')
+        # An explicitly bound external training manifest has no GUI-owned source
+        # signature. Validate its data, but never compare it against an unrelated
+        # corpus or rewrite it during a read-only freshness check.
+        if role == 'training' and Path(manifest).resolve() != _manifest_path(root, project, role).resolve():
+            try:
+                _, rows = _read_manifest_data(manifest, role)
+                if any(not isinstance(row.get('audio'), str) or not row['audio'].strip()
+                       or not isinstance(row.get('text'), str) or not row['text'].strip() for row in rows):
+                    raise ValueError('Every row must contain audio and text.')
+                return dict(result, managed=False, stale=False, status='ready',
+                            message='External training manifest selected; freshness is managed outside this project.')
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                return dict(result, managed=False, status='invalid', message=f'Unable to verify training manifest: {exc}')
         if not settings.get('source_folder'):
             source = 'validation folder' if role == 'validation' else 'source folder'
             return dict(result,status='missing',message=f'Save the project {source} first.')
@@ -429,7 +442,8 @@ def _rebase_project_path(value, old_root, new_root):
         return value
     return str((Path(new_root).resolve()/relative))
 
-def clone_project(name, root='training'):
+@project_transaction
+def clone_project(name, root='training', *, new_name=None):
     """Clone project metadata and prepared data into the next numbered name.
 
     Training outputs are deliberately not copied. Project-local references
@@ -438,8 +452,8 @@ def clone_project(name, root='training'):
     """
     root=Path(root)
     source_name=str(name or '').strip()
-    source_project=root/'projects'/source_name
-    source_file=source_project/'project.json'
+    source_file=_project_file(source_name, root)
+    source_project=source_file.parent
     if not source_file.is_file():
         raise ValueError(f'Project not found: {source_name or "(empty)"}')
     try:
@@ -447,8 +461,10 @@ def clone_project(name, root='training'):
     except Exception as exc:
         raise ValueError(f'Could not read project: {source_name}') from exc
 
-    new_name=_next_clone_name(source_name,root)
-    target_project=root/'projects'/new_name
+    new_name=_next_clone_name(source_name,root) if new_name is None else str(new_name)
+    target_project=_project_file(new_name, root).parent
+    if target_project.exists() or (root/'datasets'/new_name).exists():
+        raise ValueError(f'Project already exists: {new_name}')
     source_dataset=root/'datasets'/source_name
     target_dataset=root/'datasets'/new_name
     target_project.parent.mkdir(parents=True,exist_ok=True)

@@ -8,3 +8,22 @@
 *.md text eol=lf
 .gitattributes text eol=lf
 .gitignore text eol=lf
+
+# Web front end. The committed build is generated: keep LF and collapse its diffs.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.svg text eol=lf
+*.woff2 binary
+/tools/gui_web/** linguist-generated=true -diff
+/frontend/pnpm-lock.yaml linguist-generated=true -diff
+/frontend/public/Inter-OFL.txt text eol=lf
+/tools/gui_web/Inter-OFL.txt text eol=lf
+# Vite emits platform-native line endings in its generated notice; preserve its bytes.
+/tools/gui_web/THIRD_PARTY_NOTICES.md -text

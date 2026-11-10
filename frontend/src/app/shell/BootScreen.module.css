@@ -1,0 +1,50 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-height: 100vh;
+  padding: var(--space-6);
+  text-align: center;
+}
+
+.mark {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--color-separator);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+
+.mark[data-error] {
+  border-color: var(--color-error);
+  animation: none;
+}
+
+.title {
+  font: var(--type-headline);
+}
+
+.detail {
+  max-width: 560px;
+  color: var(--color-text-2);
+}
+
+.retry {
+  height: var(--control-height);
+  padding: 0 var(--space-5);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font: var(--type-label);
+  cursor: pointer;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
