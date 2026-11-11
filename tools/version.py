@@ -5,4 +5,4 @@ GUI's own version; pyproject.toml carries the upstream IndexTTS package version
 and is an environment file, so it is intentionally left alone.
 """
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
