@@ -1,6 +1,6 @@
 # 开发与维护
 
-普通用户请看[使用指南](user-guide.md)。2.0 使用 React + TypeScript 前端与 FastAPI 后端；用户安装、运行、更新入口不变，浏览器不需要 Node.js。
+普通用户请看[使用指南](user-guide.md)。界面使用 React + TypeScript 前端与 FastAPI 后端。用户的安装、运行、更新入口不变，也不需要安装 Node.js。
 
 ## 代码结构
 
@@ -18,7 +18,7 @@
 
 ## 开发环境
 
-Python 使用项目原有虚拟环境。前端维护者额外需要 Node.js 24 和 pnpm 12；版本锁定在[前端依赖清单](../frontend/package.json)与[锁文件](../frontend/pnpm-lock.yaml)中。
+Python 使用项目原有虚拟环境。前端维护者还需要 Node.js 和 pnpm（目前使用 Node.js 24、pnpm 12）。依赖版本锁定在[前端依赖清单](../frontend/package.json)和[锁文件](../frontend/pnpm-lock.yaml)中；这两个文件不锁定 Node.js 和 pnpm 本身的版本。
 
 ```powershell
 # 首次准备前端开发依赖
@@ -49,7 +49,7 @@ pnpm --dir frontend dev
 - 停止是协作式操作：在文本块、对话轮次、ABX 音频、训练步之间处理，不强杀正在运行的 CUDA 内核。停止、失败、成功有不同终态。
 - SSE `/api/events?lang=zh_CN` 首条为完整 `snapshot`，之后发送 job/status/console/training/export/system/settings 与心跳。断线重连重新同步快照；事件不是持久任务队列。进程退出后未完成作业不自动恢复，ABX 已保存片段可继续生成。
 - 控制台保留 1400 行，以稳定行号原地替换进度条；清空批次包含 `reset:true`。界面保留最近 50 个已结束作业。
-- 训练与事后验证共用 [`indextts_training/schedule.py`](../indextts_training/schedule.py) 的检查点/验证判定（含提前结束的 `end_step` 与区间密集验证）；模拟训练器也使用它。事后验证损失是 `validation_posthoc` GPU 作业，结果写入适配器目录的 `validation_posthoc.json`（按检查点名与验证清单指纹存储，权重文件大小/修改时间变化即过期），并重写 `tensorboard/posthoc/` 运行；曲线接口追加 `validation_posthoc/loss` 序列。
+- 训练与事后验证共用 [`indextts_training/schedule.py`](../indextts_training/schedule.py) 的检查点/验证判定（含提前结束的 `end_step` 与密集验证区间）；模拟训练器也使用它。事后验证损失是 `validation_posthoc` GPU 作业，结果写入适配器目录的 `validation_posthoc.json`（按检查点名与验证清单指纹存储，权重文件大小/修改时间变化即过期），并重写 `tensorboard/posthoc/` 运行；曲线接口追加 `validation_posthoc/loss` 序列。
 - 训练曲线从 TensorBoard event 文件读取，每条曲线最多返回 2000 点。TensorBoard 只绑定 `127.0.0.1`，不由服务器自动打开浏览器；远程访问需自行安全转发。
 
 ### 前端状态与修改保护
@@ -89,6 +89,7 @@ $py = '.\.venv\Scripts\python.exe'
 & $py -B -m unittest discover -s tests -p test_merge_lora_to_pth.py
 & $py -B -m unittest discover -s tests -p test_text_chunking.py
 & $py -B -m unittest discover -s tests -p test_abx.py
+& $py -B -m unittest discover -s tests -p test_training_schedule.py
 & $py -B -m unittest discover -s tests -p test_version.py
 
 pnpm --dir frontend typecheck
@@ -98,7 +99,7 @@ pnpm --dir frontend test
 pnpm --dir frontend build
 ```
 
-API 测试用临时根目录、模拟模型与真实 HTTP/作业流，不能写入真实语料。训练验证核心的 [`test_training_validation.py`](../tests/test_training_validation.py) 使用 pytest；可使用单独的维护者测试环境，不修改用户的运行锁文件。在已安装 pytest 的测试环境中执行 `python -B -m pytest -q tests/test_training_validation.py --basetemp .runtime/pytest-validation`，将临时产物留在已忽略目录中。旧 Gradio 回调的 AST 测试已迁移至真实 API，校对浏览器状态断言由 React/Vitest 覆盖。
+API 测试用临时根目录、模拟模型与真实 HTTP/作业流，不能写入真实语料。训练验证核心的 [`test_training_validation.py`](../tests/test_training_validation.py) 和训练后验证损失的 [`test_posthoc_validation.py`](../tests/test_posthoc_validation.py) 使用 pytest。可以用单独的维护者测试环境运行，不要改动用户的运行锁文件。在已安装 pytest 的测试环境中执行 `python -B -m pytest -q tests/test_training_validation.py tests/test_posthoc_validation.py --basetemp .runtime/pytest-validation`，临时产物会留在已被忽略的目录里。旧 Gradio 回调的 AST 测试已迁移至真实 API，校对浏览器状态断言由 React/Vitest 覆盖。
 
 上游 `test_v1.py`、`test_v2.py`、`regression_test.py`、`padding_test.py` 需要真实模型和 GPU，不属于离线模拟验收。GPU 验收项目见[验收清单](webui-acceptance.md)。
 
@@ -122,11 +123,20 @@ git ls-files | Set-Content -Encoding utf8 $inventory
 
 [版本号](../tools/version.py)与[更新日志](CHANGELOG.md)同步维护。`pyproject.toml` 的 2.5.0 是上游包版本，不是 GUI 版本；它与 `uv.lock`、安装/验证脚本等属于环境输入，本次改造不改动它们，不要求重新安装。
 
-开发分支的阶段推送：
+功能开发在 `feat/<名称>` 分支上进行，阶段性推送到两个远端：
 
 ```powershell
-git push origin feat/webui-2
-git push github feat/webui-2
+git push origin feat/<名称>
+git push github feat/<名称>
+```
+
+发布时把功能分支快进合并到 `main`，然后推送：
+
+```powershell
+git switch main
+git merge --ff-only feat/<名称>
+git push origin main
+git push github main
 ```
 
 **推送 GitHub main 才是正式发布**。未经明确批准，不推 main、不合并、不打发布标签。已有用户数据路径与环境哈希保持兼容，并不等于模拟测试已经验证真实 CUDA/训练表现。

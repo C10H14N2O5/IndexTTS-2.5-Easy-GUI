@@ -46,7 +46,7 @@
 确认 NVIDIA 驱动正常（命令行运行 `nvidia-smi`），然后重新运行 `1- install.bat`。启动窗口会显示具体是哪个版本或哪项导入出错。
 
 **界面提示 Triton 或 FlashAttention 不可用**
-先在“CUDA 运行设置”中关闭对应选项，确认基础合成正常；再重新运行 `1- install.bat` 修复。详见 [可选加速组件](installation.md#可选加速组件)。
+先在“系统 → 运行时加速”中关闭对应选项，确认基础合成正常；再重新运行 `1- install.bat` 修复。详见 [可选加速组件](installation.md#可选加速组件)。
 
 **模型缺失或下载失败**
 重新运行 `2- run.bat`，它会继续下载缺失的文件。网络受限时，在 `local-settings.bat` 中配置代理，见 [本地设置](installation.md#本地设置)。

@@ -71,11 +71,11 @@ rem set "HTTP_PROXY=http://127.0.0.1:7890"
 rem set "HTTPS_PROXY=http://127.0.0.1:7890"
 ```
 
-**局域网访问**：把 `INDEXTTS_HOST` 改成这台电脑的局域网 IP。界面中的语料、模型、导出路径都属于**运行 GUI 的那台电脑**；新的网页文件浏览器可远程选择服务器目录，不再弹服务器桌面窗口。此服务无账户鉴权，仅用于可信本机/局域网，不要直接开放公网。
+**局域网访问**：把 `INDEXTTS_HOST` 改成这台电脑的局域网 IP。界面中的语料、模型、导出路径都在**运行 GUI 的那台电脑**上；网页里的文件浏览器浏览的也是这台电脑的目录。此服务无账户鉴权，仅用于可信本机/局域网，不要直接开放公网。
 
 **录音与通知**：localhost 或 HTTPS 通常允许麦克风/通知；通过局域网 IP 的明文 HTTP 访问时，浏览器通常禁用这些能力。界面会解释原因，音频上传仍可用。
 
-**语言与外观**：顶栏可即时切换中文/English、浅色/深色/跟随系统，无需重启。设置与运行时选项保存在 `.runtime/gui_settings.json`。已有环境已包含 FastAPI，不需要重新安装；前端构建随程序一起分发，普通用户不需要 Node.js。
+**语言与外观**：顶栏可即时切换中文/English、浅色/深色/跟随系统，无需重启。设置与运行时选项保存在 `.runtime/gui_settings.json`。前端构建随程序一起分发，不需要安装 Node.js。
 
 ## 可选加速组件
 
@@ -99,7 +99,8 @@ rem set "HTTPS_PROXY=http://127.0.0.1:7890"
 | `models/asr/` | ASR 模型 |
 | `voices/`、`emotion_descriptions/` | 声音库、情绪描述库 |
 | `training/projects/`、`training/datasets/` | 训练项目设置、训练清单 |
-| `training/outputs/` | LoRA 检查点和评估音频 |
+| `validation/` | 验证语料的默认目录（也可以选择其他目录） |
+| `training/outputs/` | LoRA 检查点、评估音频和验证损失结果 |
 | `outputs/` | 合成的音频、导出的检查点；盲测对比保存在 `outputs/abx/` |
 | `.venv/`、`.runtime/` | 运行环境、缓存、设置、日志 |
 | 语料目录里的 `.proofread/` | 校对进度和文本备份 |
