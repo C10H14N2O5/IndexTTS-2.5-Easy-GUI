@@ -5,11 +5,15 @@ from typing import Any, Literal
 from fastapi import APIRouter, Query
 from pydantic import Field, field_validator
 from ..i18n import render
-from ..schemas import ApiModel, Ok
-from ..services import projects, metrics
+from ..schemas import ApiModel, JobInfo, Ok
+from ..services import projects, metrics, posthoc
 from ..services.projects import ProjectInfo, TrainingConfig, CheckpointInfo
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+
+class ValidationRunAccepted(ApiModel):
+    job: JobInfo
 
 
 class ProjectCreate(ApiModel):
@@ -47,6 +51,10 @@ class ValidationPatch(ApiModel):
     source_folder: str | None = None
     enabled: bool | None = None
     interval_steps: int | None = Field(None, ge=0)
+    dense_enabled: bool | None = None
+    dense_start_step: int | None = Field(None, ge=1)
+    dense_end_step: int | None = Field(None, ge=1)
+    dense_interval_steps: int | None = Field(None, ge=1)
     prepare: bool = False
 
 
@@ -93,7 +101,8 @@ def dataset(name: str, request: DatasetPatch):
 @router.put("/{name}/validation", response_model=ProjectInfo)
 def validation(name: str, request: ValidationPatch):
     values = request.model_dump(exclude_unset=True)
-    values = {k: v for k, v in values.items() if v is not None or k == "interval_steps"}
+    nullable = {"interval_steps", "dense_start_step", "dense_end_step", "dense_interval_steps"}
+    values = {k: v for k, v in values.items() if v is not None or k in nullable}
     return render(projects.update_validation(name, values))
 
 
@@ -110,6 +119,21 @@ def autotune(name: str, request: AutotuneRequest):
 @router.get("/{name}/checkpoints", response_model=list[CheckpointInfo])
 def checkpoints(name: str, adapter: str | None = None):
     return projects.checkpoints(name, adapter)
+
+
+@router.get("/{name}/adapters", response_model=list[projects.AdapterFolder])
+def adapters(name: str):
+    return projects.adapter_folders(name)
+
+
+@router.get("/{name}/validation-results", response_model=posthoc.PosthocResults)
+def validation_results(name: str, adapter: str | None = None):
+    return render(posthoc.results(name, adapter))
+
+
+@router.post("/{name}/validation-runs", response_model=ValidationRunAccepted, status_code=202)
+def validation_run(name: str, request: posthoc.ValidationRunRequest):
+    return render({"job": posthoc.start(name, request).to_dict()})
 
 
 @router.get("/{name}/metrics", response_model=metrics.MetricsResponse)

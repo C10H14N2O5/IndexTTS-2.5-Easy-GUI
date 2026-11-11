@@ -45,6 +45,75 @@ class TrainingApiTests(GuiApiTestCase):
         activity = self.client.get("/api/activity").json()
         self.assertTrue(any("Training complete" in item["message"] for item in activity["status"]))
 
+    def test_early_stop_finishes_at_stop_step_with_planned_schedule(self):
+        name = self.prepare(training_steps=10, save_steps=4, early_stop_enabled=True, early_stop_step=5)
+        project = self.client.get(f"/api/projects/{name}").json()
+        self.assertTrue(project["training"]["early_stop_enabled"])
+        self.assertEqual(project["training"]["early_stop_step"], 5)
+        self.assertEqual(self.client.post("/api/training/start", json={"project": name}).status_code, 202)
+        terminal = self.finish()
+        self.assertEqual(terminal["status"], "succeeded", terminal)
+        self.assertEqual((terminal["step"], terminal["total"], terminal["schedule_total"]), (5, 5, 10))
+        self.assertIn("finished early at step 5", terminal["message"])
+        self.assertIn("LR schedule 10", terminal["message"])
+        persisted = json.loads((self.root / "training/outputs/trainer/training_config.json").read_text())
+        self.assertEqual((persisted["end_step"], persisted["steps"]), (5, 10))
+        checkpoints = {row["name"]: row for row in self.client.get(f"/api/projects/{name}/checkpoints").json()}
+        self.assertEqual(set(checkpoints), {"checkpoint-step-000004", "checkpoint-step-000005", "final_adapter"})
+        self.assertTrue(checkpoints["checkpoint-step-000005"]["early_stopped"])
+        self.assertFalse(checkpoints["checkpoint-step-000004"]["early_stopped"])
+        self.assertTrue(checkpoints["final_adapter"]["early_stopped"])
+        self.assertEqual(checkpoints["final_adapter"]["step"], 5)
+        activity = self.client.get("/api/activity").json()
+        self.assertTrue(any("finished early" in str(item) for item in activity["status"]))
+        # Resuming the early-stopped run without early stop continues the original plan.
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "early_stop_enabled": False, "resume_checkpoint": checkpoints["checkpoint-step-000005"]["path"]}})
+        self.assertEqual(response.status_code, 202, response.text)
+        terminal = self.finish()
+        self.assertEqual((terminal["status"], terminal["step"], terminal["total"], terminal["schedule_total"]),
+                         ("succeeded", 10, 10, 10))
+        self.assertIn("Training complete", terminal["message"])
+        final = {row["name"]: row for row in self.client.get(f"/api/projects/{name}/checkpoints").json()}["final_adapter"]
+        self.assertEqual((final["step"], final["early_stopped"]), (10, False))
+
+    def test_early_stop_preflight_rejects_invalid_steps(self):
+        name = self.prepare(training_steps=10, save_steps=4)
+        for stop in (10, 11):
+            with self.subTest(stop=stop):
+                response = self.client.post("/api/training/start", json={"project": name, "training": {
+                    "early_stop_enabled": True, "early_stop_step": stop}})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn("planned 10", response.json()["error"]["message"])
+        # Epoch mode plans epochs x updates (one clip -> one update per epoch).
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "mode": "Epochs", "training_epochs": 3, "early_stop_enabled": True, "early_stop_step": 3}})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("planned 3", response.json()["error"]["message"])
+        # A disabled early stop ignores its step entirely.
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "training_steps": 4, "early_stop_enabled": False, "early_stop_step": 1}})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(self.finish()["step"], 4)
+        checkpoint = self.root / "training/outputs/trainer/checkpoint-step-000004"
+        self.assertTrue(checkpoint.is_dir())
+        for stop in (3, 4):
+            with self.subTest(resume_stop=stop):
+                response = self.client.post("/api/training/start", json={"project": name, "training": {
+                    "early_stop_enabled": True, "early_stop_step": stop, "resume_checkpoint": str(checkpoint)}})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn("already at step 4", response.json()["error"]["message"])
+        self.assertFalse(self.state.training.snapshot()["running"])
+        # The sidecar wins over the folder name for the resume step.
+        renamed = checkpoint.with_name("checkpoint-renamed")
+        checkpoint.rename(renamed)
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "early_stop_enabled": True, "early_stop_step": 4, "resume_checkpoint": str(renamed)}})
+        self.assertEqual(response.status_code, 400, response.text)
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "early_stop_enabled": True, "early_stop_step": 6, "resume_checkpoint": str(checkpoint.with_name("checkpoint-step-000004"))}})
+        self.assertEqual(response.status_code, 400, response.text)  # resume folder no longer exists
+
     def test_training_failure_and_stop_are_terminal_and_release_gpu(self):
         self.prepare(adapter_name="fail_training", training_steps=7)
         self.assertEqual(self.client.post("/api/training/start", json={"project": "trainer"}).status_code, 202)

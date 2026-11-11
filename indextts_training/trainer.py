@@ -8,6 +8,9 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 import torchaudio
+from indextts_training.schedule import (
+    checkpoint_due as _checkpoint_due, validation_due as _validation_due, write_adapter_state,
+)
 
 
 PHONETIC_BLANK = 0
@@ -526,16 +529,18 @@ def _acoustic_sample_loss(tts, item, device):
     return total, mel
 
 
-def _validation_loss(tts, rows, device, step, stop_event):
+def _validation_loss(tts, rows, device, step, stop_event, on_sample=None):
     adapter = tts.gpt.gpt
     was_training = adapter.training
     total = 0.0
     try:
         adapter.eval()
         with torch.no_grad():
-            for item in rows:
+            for index, item in enumerate(rows):
                 if stop_event.is_set():
                     return None
+                if on_sample is not None:
+                    on_sample(index, len(rows))
                 try:
                     loss, _ = _acoustic_sample_loss(tts, item, device)
                     value = float(loss.float().item())
@@ -620,6 +625,7 @@ def train_lora(config, callback, stop_event):
     if validation and not validation_rows:
         raise RuntimeError('Validation manifest is empty.')
     validation_interval = validation.get('interval_steps') if validation else None
+    validation_dense = validation.get('dense') if validation else None
     saved_config = dict(config)
     if validation:
         saved_config['validation'] = {key: value for key, value in validation.items() if key != 'rows'}
@@ -670,6 +676,12 @@ def train_lora(config, callback, stop_event):
     micro=max(1,int(config['batch'])); accum=max(1,int(config['grad_accum'])); clip=float(config['grad_clip'])
     updates_per_epoch=max(1,math.ceil(len(rows)/(micro*accum)))
     total=int(config['steps']) if config['mode']=='Steps' else int(config['epochs'])*updates_per_epoch
+    # Early stop ends the loop sooner but keeps the planned LR schedule, so a
+    # later resume without early stop continues the original plan seamlessly.
+    requested_end=config.get('end_step')
+    end_step=total if not requested_end else int(requested_end)
+    if end_step<1 or end_step>total:
+        raise RuntimeError(f'Early stop step {end_step} must be between 1 and the planned {total} steps.')
     warm=max(20,min(100,int(round(total*.05))))
     min_lr_ratio=0.10
     def lr_lambda(current_step):
@@ -683,6 +695,8 @@ def train_lora(config, callback, stop_event):
         state=Path(resume)/'trainer_state.pt'
         if state.is_file():
             st=torch.load(state,map_location='cpu'); start_step=int(st.get('step',0)); opt.load_state_dict(st['optimizer']); sched.load_state_dict(st['scheduler'])
+    if start_step>=end_step:
+        raise RuntimeError(f'Resume checkpoint is already at step {start_step}, at or beyond the end step {end_step}.')
     opt.zero_grad(set_to_none=True); started=time.time(); ema=None; step=start_step; cursor=(start_step*micro*accum)%len(rows)
     save_every=max(1,int(config['save_every']))
 
@@ -691,6 +705,7 @@ def train_lora(config, callback, stop_event):
         tts.gpt.gpt.save_pretrained(str(directory), safe_serialization=True)
         torch.save({'step': saved_step, 'optimizer': opt.state_dict(),
                     'scheduler': sched.state_dict(), 'config': saved_config}, directory/'trainer_state.pt')
+        write_adapter_state(directory, saved_step, total, end_step, stop_event.is_set())
 
     # A resume from an earlier checkpoint can replay previously logged steps.
     # Retain the checkpoint's metrics and hide later events before appending.
@@ -702,7 +717,7 @@ def train_lora(config, callback, stop_event):
             ]}})
             writer.add_text('validation/dataset',
                             f'SHA-256: `{validation["fingerprint"]}`\n\nSamples: {len(validation_rows)}', start_step)
-        while step<total and not stop_event.is_set():
+        while step<end_step and not stop_event.is_set():
             running_loss=0.0; running_mel=0.0; seen=0
             for ga in range(accum):
                 for mb in range(micro):
@@ -723,7 +738,7 @@ def train_lora(config, callback, stop_event):
             opt.step(); sched.step(); opt.zero_grad(set_to_none=True)
             raw=running_loss/seen; mel_raw=running_mel/seen
             ema=raw if ema is None else .95*ema+.05*raw; step+=1
-            elapsed=time.time()-started; rate=(step-start_step)/max(elapsed,1e-6); eta=(total-step)/max(rate,1e-6)
+            elapsed=time.time()-started; rate=(step-start_step)/max(elapsed,1e-6); eta=(end_step-step)/max(rate,1e-6)
             epoch=math.ceil(step/updates_per_epoch)
             current_lr=opt.param_groups[0]['lr']
             writer.add_scalar('train/loss_ema',ema,step); writer.add_scalar('train_raw/loss',raw,step); writer.add_scalar('train/lr',current_lr,step)
@@ -731,14 +746,17 @@ def train_lora(config, callback, stop_event):
             writer.add_scalar('train/grad_norm',float(grad_norm),step)
             writer.add_scalar('train/epoch',epoch,step)
             writer.flush()
-            callback(step=step,total=total,epoch=epoch,loss=ema,elapsed=elapsed,eta=eta,message=f'Training step {step}/{total} | epoch {epoch} | lr {current_lr:.2e}')
+            plan=f' (LR schedule {total})' if end_step!=total else ''
+            callback(step=step,total=end_step,schedule_total=total,epoch=epoch,loss=ema,elapsed=elapsed,eta=eta,
+                     message=f'Training step {step}/{end_step}{plan} | epoch {epoch} | lr {current_lr:.2e}')
 
             checkpoint = out / f'checkpoint-step-{step:06d}'
-            checkpoint_due = step % save_every == 0 or step == total
+            checkpoint_due = _checkpoint_due(step, save_every, end_step)
             if checkpoint_due:
                 save_adapter(checkpoint, step)
 
-            if validation_rows and (step % (validation_interval or save_every) == 0 or step == total):
+            if validation_rows and _validation_due(step, end_step=end_step, save_every=save_every,
+                                                   interval=validation_interval, dense=validation_dense):
                 callback(message=f'Running validation at step {step}…')
                 try:
                     validation_loss = _validation_loss(tts, validation_rows, device, step, stop_event)
@@ -762,4 +780,6 @@ def train_lora(config, callback, stop_event):
         final = out / 'final_adapter'
         save_adapter(final, step)
     del tts; torch.cuda.empty_cache()
-    return {'step':step,'total':total,'output':str(final),'stopped':stop_event.is_set()}
+    stopped=stop_event.is_set()
+    return {'step':step,'total':total,'schedule_total':total,'end_step':end_step,'output':str(final),'stopped':stopped,
+            'early_stopped':(not stopped and end_step<total and step==end_step)}

@@ -55,6 +55,11 @@ def training(tmp_path, monkeypatch):
     writer.__enter__.return_value = writer
     writer_factory = Mock(return_value=writer)
     bfloat16 = object()
+    lr_lambdas = []
+
+    def lambda_lr(_optimizer, lr_lambda):
+        lr_lambdas.append(lr_lambda)
+        return scheduler
 
     @contextmanager
     def no_grad():
@@ -82,7 +87,7 @@ def training(tmp_path, monkeypatch):
         cuda=SimpleNamespace(is_available=lambda: True, manual_seed_all=Mock(), empty_cache=Mock()),
         manual_seed=Mock(), isfinite=math.isfinite,
         optim=SimpleNamespace(AdamW=lambda *_, **__: optimizer,
-                              lr_scheduler=SimpleNamespace(LambdaLR=lambda *_: scheduler)),
+                              lr_scheduler=SimpleNamespace(LambdaLR=lambda_lr)),
         save=lambda state, path: path.write_text(json.dumps(state), encoding='utf-8'),
         load=lambda path, map_location: json.loads(path.read_text(encoding='utf-8')),
     )
@@ -141,7 +146,7 @@ def training(tmp_path, monkeypatch):
     return SimpleNamespace(
         trainer=trainer, config=config, out=out, writer=writer, writer_factory=writer_factory,
         optimizer=optimizer, scheduler=scheduler, adapter=adapter, flags=flags, samples=samples,
-        backward=backward, stop=stop,
+        backward=backward, stop=stop, tts=tts, callback=callback, lr_lambdas=lr_lambdas,
         run=lambda: trainer.train_lora(config, callback, stop),
     )
 
@@ -285,3 +290,165 @@ def test_tensorboard_event_log_contains_validation_and_overlay(training, tmp_pat
     tag, dataset, step = training.writer.add_text.call_args.args
     assert tag == 'validation/dataset' and step == 0
     assert training.config['validation']['fingerprint'] in dataset and 'Samples: 2' in dataset
+
+
+def adapter_state(path):
+    return json.loads((path / 'adapter_state.json').read_text(encoding='utf-8'))
+
+
+def callback_progress(training):
+    return [entry.kwargs for entry in training.callback.call_args_list if 'step' in entry.kwargs]
+
+
+def test_planned_run_reports_schedule_and_writes_sidecars(training):
+    result = training.run()
+    assert (result['step'], result['total'], result['schedule_total'], result['end_step']) == (4, 4, 4, 4)
+    assert not result['early_stopped'] and not result['stopped']
+    for name, step in [('checkpoint-step-000002', 2), ('checkpoint-step-000004', 4), ('final_adapter', 4)]:
+        assert adapter_state(training.out / name) == {
+            'step': step, 'schedule_total': 4, 'end_step': 4, 'stopped': False, 'early_stopped': False}
+    progress = callback_progress(training)
+    assert [(item['step'], item['total'], item['schedule_total']) for item in progress] == [
+        (1, 4, 4), (2, 4, 4), (3, 4, 4), (4, 4, 4)]
+    assert all('LR schedule' not in item['message'] for item in progress)
+
+
+def test_early_stop_ends_loop_but_keeps_planned_lr_schedule(training):
+    training.config.update(steps=400, end_step=5)
+    result = training.run()
+    assert result['step'] == 5 and result['end_step'] == 5
+    assert result['total'] == result['schedule_total'] == 400
+    assert result['early_stopped'] and not result['stopped']
+    assert training.optimizer.step.call_count == training.scheduler.step.call_count == 5
+    # Checkpoint, validation and evaluation are forced at the off-grid end step.
+    assert validation_points(training.writer) == [(2, 3.0), (4, 3.0), (5, 3.0)]
+    assert [entry.args[2] for entry in training.trainer._generate_eval.call_args_list] == [2, 4, 5]
+    assert sorted(path.name for path in training.out.glob('checkpoint-step-*')) == [
+        'checkpoint-step-000002', 'checkpoint-step-000004', 'checkpoint-step-000005']
+    assert not (training.out / 'checkpoint-step-000006').exists()
+    state = json.loads((training.out / 'checkpoint-step-000005/trainer_state.pt').read_text(encoding='utf-8'))
+    assert state['step'] == state['optimizer']['steps'] == state['scheduler']['steps'] == 5
+    assert state['config']['end_step'] == 5
+    assert (training.out / 'final_adapter/trainer_state.pt').is_file()
+    assert adapter_state(training.out / 'checkpoint-step-000004') == {
+        'step': 4, 'schedule_total': 400, 'end_step': 5, 'stopped': False, 'early_stopped': False}
+    for name in ['checkpoint-step-000005', 'final_adapter']:
+        assert adapter_state(training.out / name) == {
+            'step': 5, 'schedule_total': 400, 'end_step': 5, 'stopped': False, 'early_stopped': True}
+    progress = callback_progress(training)
+    assert [(item['step'], item['total'], item['schedule_total']) for item in progress] == [
+        (step, 5, 400) for step in range(1, 6)]
+    assert progress[-1]['message'].startswith('Training step 5/5 (LR schedule 400)')
+    # The LR lambda keeps the planned 400-step horizon: not decayed at the stop step.
+    [lr_lambda] = training.lr_lambdas
+    warm = 20
+    assert lr_lambda(0) == pytest.approx(1 / warm)
+    assert lr_lambda(4) == pytest.approx(5 / warm)
+    assert lr_lambda(warm) == pytest.approx(1.0)
+    assert lr_lambda(100) > 0.9
+    assert lr_lambda(210) == pytest.approx(0.55, abs=0.01)
+    assert lr_lambda(400) == pytest.approx(0.1)
+    assert lr_lambda(10_000) == pytest.approx(0.1)
+
+
+def test_early_stop_at_planned_total_is_a_normal_finish(training):
+    training.config['end_step'] = 4
+    result = training.run()
+    assert result['step'] == 4 and not result['early_stopped']
+    assert adapter_state(training.out / 'final_adapter')['early_stopped'] is False
+
+
+def test_end_step_zero_or_none_means_planned_total(training):
+    training.config['end_step'] = 0
+    result = training.run()
+    assert (result['step'], result['end_step'], result['early_stopped']) == (4, 4, False)
+
+
+@pytest.mark.parametrize('end_step', [5, -1, 1000])
+def test_invalid_end_step_raises_before_training(training, end_step):
+    training.config['end_step'] = end_step
+    with pytest.raises(RuntimeError, match=rf'Early stop step {end_step} must be between 1 and the planned 4 steps'):
+        training.run()
+    training.optimizer.step.assert_not_called()
+    training.writer_factory.assert_not_called()
+
+
+def make_resume(tmp_path, step):
+    resume = tmp_path / f'checkpoint-step-{step:06d}'
+    resume.mkdir()
+    state = {'step': step, 'optimizer': {'steps': step}, 'scheduler': {'steps': step}}
+    (resume / 'trainer_state.pt').write_text(json.dumps(state), encoding='utf-8')
+    return resume
+
+
+@pytest.mark.parametrize('end_step', [2, 3])
+def test_resume_at_or_beyond_end_step_raises(training, tmp_path, end_step):
+    training.config.update(resume=str(make_resume(tmp_path, 3)), steps=6, end_step=end_step)
+    with pytest.raises(RuntimeError, match=rf'already at step 3, at or beyond the end step {end_step}'):
+        training.run()
+    training.optimizer.step.assert_not_called()
+    training.writer_factory.assert_not_called()
+    assert not (training.out / 'final_adapter').exists()
+
+
+def test_resume_at_planned_total_raises(training, tmp_path):
+    training.config.update(resume=str(make_resume(tmp_path, 4)), steps=4)
+    with pytest.raises(RuntimeError, match='already at step 4, at or beyond the end step 4'):
+        training.run()
+
+
+def test_resume_then_early_stop(training, tmp_path):
+    training.config.update(resume=str(make_resume(tmp_path, 3)), steps=10, end_step=5)
+    result = training.run()
+    assert result['step'] == 5 and result['early_stopped']
+    assert training.optimizer.step.call_count == 2
+    assert validation_points(training.writer) == [(4, 3.0), (5, 3.0)]
+    progress = callback_progress(training)
+    assert [(item['step'], item['total'], item['schedule_total']) for item in progress] == [(4, 5, 10), (5, 5, 10)]
+
+
+def test_dense_range_adds_validation_points_without_checkpoints(training):
+    training.config.update(steps=12, save_every=6)
+    training.config['validation']['dense'] = {'start_step': 2, 'end_step': 5, 'interval_steps': 2}
+    training.run()
+    assert [step for step, _ in validation_points(training.writer)] == [2, 4, 6, 12]
+    assert [entry.args[2] for entry in training.trainer._generate_eval.call_args_list] == [6, 12]
+    assert sorted(path.name for path in training.out.glob('checkpoint-step-*')) == [
+        'checkpoint-step-000006', 'checkpoint-step-000012']
+    state = json.loads((training.out / 'checkpoint-step-000006/trainer_state.pt').read_text(encoding='utf-8'))
+    assert state['config']['validation']['dense'] == training.config['validation']['dense']
+
+
+def test_dense_range_is_inclusive_and_combines_with_interval(training):
+    training.config.update(steps=10, save_every=10)
+    training.config['validation'].update(interval_steps=4,
+                                         dense={'start_step': 3, 'end_step': 9, 'interval_steps': 3})
+    training.run()
+    assert [step for step, _ in validation_points(training.writer)] == [3, 4, 6, 8, 9, 10]
+
+
+def test_dense_range_ignored_without_validation_rows(training):
+    training.config.pop('validation')
+    training.config['steps'] = 6
+    assert training.run()['step'] == 6
+    assert validation_points(training.writer) == []
+
+
+def test_stopped_run_writes_stopped_sidecar(training):
+    training.config['validation']['interval_steps'] = 1
+    training.config['validation']['rows'][0]['stop'] = True
+    training.config.update(steps=10, end_step=6)
+    result = training.run()
+    assert result['stopped'] and not result['early_stopped']
+    assert adapter_state(training.out / 'final_adapter') == {
+        'step': 1, 'schedule_total': 10, 'end_step': 6, 'stopped': True, 'early_stopped': False}
+
+
+def test_validation_loss_reports_each_sample(training):
+    seen = []
+    loss = training.trainer._validation_loss(
+        training.tts, training.config['validation']['rows'], 'cuda:0', 7, Event(),
+        on_sample=lambda index, count: seen.append((index, count)))
+    assert loss == 3.0
+    assert seen == [(0, 2), (1, 2)]
+    assert training.adapter.training is False  # restored to the pre-call mode

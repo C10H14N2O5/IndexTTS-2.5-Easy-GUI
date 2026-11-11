@@ -109,30 +109,38 @@ def _manifest_rows(path: str | None) -> int:
         return 0
 
 
-def _write_adapter(directory: Path, config: dict) -> None:
+def _write_adapter(directory: Path, config: dict, step: int = 0) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     adapter_config = {"peft_type": "LORA", "bias": "none", "r": int(config.get("rank", 16)),
                       "lora_alpha": int(config.get("alpha", 32)), "lora_dropout": float(config.get("dropout", 0.05)),
                       "target_modules": ["c_attn", "c_proj", "c_fc"], "task_type": None}
     (directory / "adapter_config.json").write_text(json.dumps(adapter_config, indent=2), encoding="utf-8")
-    (directory / "adapter_model.safetensors").write_bytes(b"FAKE-SAFETENSORS")
+    # Distinct weights per step, so the final adapter matches the last checkpoint exactly.
+    (directory / "adapter_model.safetensors").write_bytes(f"FAKE-SAFETENSORS-{int(step)}".encode("ascii"))
 
 
 def fake_train_lora(config, callback, stop_event):
     """Stand-in for ``indextts_training.trainer.train_lora`` with real TensorBoard events."""
     from torch.utils.tensorboard import SummaryWriter
+    from indextts_training.schedule import checkpoint_due as due_checkpoint, validation_due, write_adapter_state
 
     out = Path(config["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
     rows = max(1, _manifest_rows(config.get("manifest")))
     per_epoch = max(1, math.ceil(rows / (int(config.get("batch", 1)) * int(config.get("grad_accum", 8)))))
     total = int(config.get("steps", 100)) if config.get("mode") == "Steps" else int(config.get("epochs", 2)) * per_epoch
+    end_step = int(config.get("end_step") or total)
+    if end_step < 1 or end_step > total:
+        raise RuntimeError(f"Early stop step {end_step} must be between 1 and the planned {total} steps.")
     save_every = max(1, int(config.get("save_every", 50)))
     resume = str(config.get("resume") or "")
     start = int(resume.rsplit("-", 1)[-1]) if resume and resume.rsplit("-", 1)[-1].isdigit() else 0
+    if start >= end_step:
+        raise RuntimeError(f"Resume checkpoint is already at step {start}, at or beyond the end step {end_step}.")
     validation = config.get("validation") or None
     interval = int((validation or {}).get("interval_steps") or 0)
-    delay = max(0.02, min(0.25, 40.0 / max(1, total)))
+    dense = (validation or {}).get("dense")
+    delay = max(0.02, min(0.25, 40.0 / max(1, end_step - start)))
     fail = "fail" in out.name.lower()
     writer = SummaryWriter(str(out / "tensorboard"))
     callback(message="Loading IndexTTS 2.5 training runtime…")
@@ -143,7 +151,7 @@ def fake_train_lora(config, callback, stop_event):
     ema = None
     step = start
     try:
-        for step in range(start + 1, total + 1):
+        for step in range(start + 1, end_step + 1):
             if stop_event.is_set():
                 step -= 1
                 break
@@ -163,18 +171,21 @@ def fake_train_lora(config, callback, stop_event):
             writer.add_scalar("train/grad_norm", 0.4 + 0.1 * math.cos(step), step)
             writer.add_scalar("train/epoch", epoch, step)
             elapsed = time.time() - began
-            eta = elapsed / max(1, step - start) * (total - step)
-            callback(step=step, total=total, epoch=epoch, loss=ema, elapsed=elapsed, eta=eta,
-                     message=f"Training step {step}/{total} | epoch {epoch} | lr {lr:.2e}")
-            checkpoint_due = step % save_every == 0 or step == total
-            if validation and ((interval and step % interval == 0) or (not interval and checkpoint_due)):
+            eta = elapsed / max(1, step - start) * (end_step - step)
+            plan = f" (LR schedule {total})" if end_step != total else ""
+            callback(step=step, total=end_step, schedule_total=total, epoch=epoch, loss=ema, elapsed=elapsed, eta=eta,
+                     message=f"Training step {step}/{end_step}{plan} | epoch {epoch} | lr {lr:.2e}")
+            checkpoint_due = due_checkpoint(step, save_every, end_step)
+            if validation and validation_due(step, end_step=end_step, save_every=save_every, interval=interval,
+                                             dense=dense):
                 callback(message=f"Running validation at step {step}…")
                 value = ema * 1.12 + 0.05
                 writer.add_scalar("validation/loss", value, step)
                 callback(message=f"Validation loss at step {step}: {value:.6f}")
             if checkpoint_due:
                 checkpoint = out / f"checkpoint-step-{step:06d}"
-                _write_adapter(checkpoint, config)
+                _write_adapter(checkpoint, config, step)
+                write_adapter_state(checkpoint, step, total, end_step, False)
                 eval_name = ""
                 if config.get("eval_enabled") and config.get("eval_text") and config.get("eval_reference"):
                     eval_wav = write_tone(out / "evaluation" / f"eval-step-{step:06d}.wav", 2.0, 200 + step % 200)
@@ -184,8 +195,41 @@ def fake_train_lora(config, callback, stop_event):
     finally:
         writer.close()
     final = out / "final_adapter"
-    _write_adapter(final, config)
-    return {"step": step, "total": total, "output": str(final), "stopped": stop_event.is_set()}
+    stopped = stop_event.is_set()
+    _write_adapter(final, config, step)
+    write_adapter_state(final, step, total, end_step, stopped)
+    return {"step": step, "total": total, "schedule_total": total, "end_step": end_step, "output": str(final),
+            "stopped": stopped, "early_stopped": not stopped and end_step < total and step == end_step}
+
+
+def fake_evaluate_checkpoints(model_dir, targets, rows, *, on_progress=None, on_result=None,
+                              cancelled=lambda: False, seed=1234):
+    """Stand-in for ``indextts_training.posthoc.evaluate_checkpoints``.
+
+    Loss decreases with the checkpoint step; the base model scores highest. A
+    checkpoint name containing ``fail`` raises once it is reached.
+    """
+    rows = list(rows)
+    if not rows:
+        raise RuntimeError("Validation manifest is empty.")
+    units = max(1, len(targets) * len(rows))
+    completed = []
+    time.sleep(0.3)  # model load
+    for index, target in enumerate(targets):
+        for sample in range(len(rows)):
+            if cancelled():
+                return {"completed": completed, "stopped": True}
+            if on_progress is not None:
+                on_progress(index * len(rows) + sample, units, target, sample, len(rows))
+            time.sleep(0.03)
+        if "fail" in str(target["name"]).lower():
+            raise RuntimeError(f"Fake validation failure requested by {target['name']}.")
+        step = target.get("step")
+        loss = 2.9 if target.get("path") is None else 0.9 + 1.6 * math.exp(-float(step or 0) / 300.0)
+        completed.append(target["name"])
+        if on_result is not None:
+            on_result(target, loss)
+    return {"completed": completed, "stopped": bool(cancelled())}
 
 
 def _ensure_fake_model() -> None:
@@ -205,5 +249,6 @@ def install(state) -> None:
     state.asr = FakeAsrService(paths.ROOT)
     state.export = ExportManager(paths.ROOT, script=Path(__file__).with_name("fake_merge.py"))
     state.training.train_fn = fake_train_lora
+    state.extras["posthoc_fn"] = fake_evaluate_checkpoints
     state.extras["model_dir"] = model_dir()
     print("[fake-engine] INDEXTTS_FAKE_ENGINE=1: synthesis, training, ASR and export are simulated.", flush=True)

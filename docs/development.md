@@ -49,6 +49,7 @@ pnpm --dir frontend dev
 - 停止是协作式操作：在文本块、对话轮次、ABX 音频、训练步之间处理，不强杀正在运行的 CUDA 内核。停止、失败、成功有不同终态。
 - SSE `/api/events?lang=zh_CN` 首条为完整 `snapshot`，之后发送 job/status/console/training/export/system/settings 与心跳。断线重连重新同步快照；事件不是持久任务队列。进程退出后未完成作业不自动恢复，ABX 已保存片段可继续生成。
 - 控制台保留 1400 行，以稳定行号原地替换进度条；清空批次包含 `reset:true`。界面保留最近 50 个已结束作业。
+- 训练与事后验证共用 [`indextts_training/schedule.py`](../indextts_training/schedule.py) 的检查点/验证判定（含提前结束的 `end_step` 与区间密集验证）；模拟训练器也使用它。事后验证损失是 `validation_posthoc` GPU 作业，结果写入适配器目录的 `validation_posthoc.json`（按检查点名与验证清单指纹存储，权重文件大小/修改时间变化即过期），并重写 `tensorboard/posthoc/` 运行；曲线接口追加 `validation_posthoc/loss` 序列。
 - 训练曲线从 TensorBoard event 文件读取，每条曲线最多返回 2000 点。TensorBoard 只绑定 `127.0.0.1`，不由服务器自动打开浏览器；远程访问需自行安全转发。
 
 ### 前端状态与修改保护

@@ -521,6 +521,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/adapters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Adapters */
+        get: operations["adapters_api_projects__name__adapters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/validation-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Validation Results */
+        get: operations["validation_results_api_projects__name__validation_results_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/validation-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validation Run */
+        post: operations["validation_run_api_projects__name__validation_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/metrics": {
         parameters: {
             query?: never;
@@ -1034,6 +1085,21 @@ export interface components {
             /** Kind */
             kind: string;
         };
+        /** AdapterFolder */
+        AdapterFolder: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Checkpoints */
+            checkpoints: number;
+            /** Has Final */
+            has_final: boolean;
+            /** Modified */
+            modified: number;
+            /** Is Project Adapter */
+            is_project_adapter: boolean;
+        };
         /** AdapterInfo */
         AdapterInfo: {
             /** Filename */
@@ -1253,6 +1319,11 @@ export interface components {
              * @default false
              */
             resumable: boolean;
+            /**
+             * Early Stopped
+             * @default false
+             */
+            early_stopped: boolean;
         };
         /** ConsoleLine */
         ConsoleLine: {
@@ -1793,6 +1864,45 @@ export interface components {
             /** Step */
             step: number;
         };
+        /** PosthocItem */
+        PosthocItem: {
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "baseline" | "final" | "checkpoint";
+            /** Step */
+            step?: number | null;
+            /** Loss */
+            loss: number;
+            /** Validation Fingerprint */
+            validation_fingerprint: string;
+            /** Samples */
+            samples: number;
+            /** Computed At */
+            computed_at: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "current" | "outdated";
+            /** Same As */
+            same_as?: string | null;
+        };
+        /** PosthocResults */
+        PosthocResults: {
+            /** Project */
+            project: string;
+            /** Adapter */
+            adapter: string;
+            validation: components["schemas"]["ValidationSetInfo"];
+            /** Training Fingerprint */
+            training_fingerprint?: string | null;
+            /** Items */
+            items?: components["schemas"]["PosthocItem"][];
+        };
         /** ProjectClone */
         ProjectClone: {
             /** Name */
@@ -2234,6 +2344,16 @@ export interface components {
              */
             save_epochs: number;
             /**
+             * Early Stop Enabled
+             * @default false
+             */
+            early_stop_enabled: boolean;
+            /**
+             * Early Stop Step
+             * @default 500
+             */
+            early_stop_step: number;
+            /**
              * Lora Rank
              * @default 16
              * @enum {integer}
@@ -2399,6 +2519,11 @@ export interface components {
              */
             total: number;
             /**
+             * Schedule Total
+             * @default 0
+             */
+            schedule_total: number;
+            /**
              * Epoch
              * @default 0
              */
@@ -2483,6 +2608,17 @@ export interface components {
             enabled: boolean;
             /** Interval Steps */
             interval_steps?: number | null;
+            /**
+             * Dense Enabled
+             * @default false
+             */
+            dense_enabled: boolean;
+            /** Dense Start Step */
+            dense_start_step?: number | null;
+            /** Dense End Step */
+            dense_end_step?: number | null;
+            /** Dense Interval Steps */
+            dense_interval_steps?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -2503,11 +2639,59 @@ export interface components {
             enabled?: boolean | null;
             /** Interval Steps */
             interval_steps?: number | null;
+            /** Dense Enabled */
+            dense_enabled?: boolean | null;
+            /** Dense Start Step */
+            dense_start_step?: number | null;
+            /** Dense End Step */
+            dense_end_step?: number | null;
+            /** Dense Interval Steps */
+            dense_interval_steps?: number | null;
             /**
              * Prepare
              * @default false
              */
             prepare: boolean;
+        };
+        /** ValidationRunAccepted */
+        ValidationRunAccepted: {
+            job: components["schemas"]["JobInfo"];
+        };
+        /** ValidationRunRequest */
+        ValidationRunRequest: {
+            /** Adapter */
+            adapter?: string | null;
+            /** Checkpoints */
+            checkpoints?: string[];
+            /**
+             * Include Baseline
+             * @default false
+             */
+            include_baseline: boolean;
+            /**
+             * Recompute
+             * @default false
+             */
+            recompute: boolean;
+        };
+        /** ValidationSetInfo */
+        ValidationSetInfo: {
+            /** Ready */
+            ready: boolean;
+            /** Message */
+            message: string;
+            /** Fingerprint */
+            fingerprint?: string | null;
+            /**
+             * Samples
+             * @default 0
+             */
+            samples: number;
+            /**
+             * Manifest
+             * @default
+             */
+            manifest: string;
         };
         /** Voice */
         Voice: {
@@ -3791,6 +3975,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CheckpointInfo"][];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    adapters_api_projects__name__adapters_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdapterFolder"][];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    validation_results_api_projects__name__validation_results_get: {
+        parameters: {
+            query?: {
+                adapter?: string | null;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PosthocResults"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    validation_run_api_projects__name__validation_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidationRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationRunAccepted"];
                 };
             };
             /** @description Invalid request */

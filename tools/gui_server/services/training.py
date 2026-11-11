@@ -21,6 +21,7 @@ class TrainingSnapshot(OpenModel):
     status: Literal["idle", "running", "stopping", "stopped", "succeeded", "failed"] = "idle"
     step: int = 0
     total: int = 0
+    schedule_total: int = 0
     epoch: float = 0
     loss: float | None = None
     elapsed: float = 0
@@ -32,6 +33,18 @@ class TrainingSnapshot(OpenModel):
     adapter: str = ""
     started_at: float | None = None
     finished_at: float | None = None
+
+
+def _checkpoint_step(path: str | None) -> int | None:
+    """Global step of a resume folder from its sidecar or ``checkpoint-step-N`` name."""
+    if not path:
+        return None
+    from indextts_training.schedule import read_adapter_state
+    sidecar = read_adapter_state(path)
+    if sidecar:
+        return sidecar["step"]
+    suffix = Path(path).name.rsplit("-", 1)[-1]
+    return int(suffix) if suffix.isdigit() else None
 
 
 def snapshot(state=None) -> dict:
@@ -76,6 +89,16 @@ def start(name: str, overrides: dict | None = None) -> dict:
                 raise ServiceError("CUDA is unavailable. This Easy GUI is configured as an NVIDIA CUDA build; rerun 1- install.bat and check your NVIDIA driver.")
         updates = max(1, math.ceil(max(1, int(meta.get("stats", {}).get("valid", 1))) /
                                   (values["micro_batch"] * values["grad_accum"])))
+        end_step = None
+        if values["early_stop_enabled"]:
+            planned = values["training_steps"] if values["mode"] == "Steps" else values["training_epochs"] * updates
+            end_step = values["early_stop_step"]
+            if end_step >= planned:
+                raise ServiceError("The early stop step must be smaller than the planned {0} training steps.", planned)
+            resumed = _checkpoint_step(resume)
+            if resumed is not None and resumed >= end_step:
+                raise ServiceError("The resume checkpoint is already at step {0}; choose an early stop step after it.",
+                                   resumed)
         cfg = dict(manifest=manifest, model_dir=str(state.extras.get("model_dir", paths.MODEL_DIR)),
                    output_dir=str(output), mode=values["mode"], steps=values["training_steps"],
                    epochs=values["training_epochs"], save_every=values["save_steps"] if values["mode"] == "Steps"
@@ -86,7 +109,7 @@ def start(name: str, overrides: dict | None = None) -> dict:
                    project=name, training_root=str(paths.TRAINING_DIR), eval_enabled=values["eval_enabled"],
                    eval_text=values["eval_text"].strip(), eval_reference=values["eval_reference"],
                    eval_reference_transcript=values["eval_reference_transcript"].strip(),
-                   eval_language=projects.language_code(values["eval_language"]),
+                   eval_language=projects.language_code(values["eval_language"]), end_step=end_step,
                    **projects._DISABLED_AUXILIARY)
         cfg.update(differentiable_asr_model="large-v3", asr_cfm_steps=4, asr_cfm_temperature=1.0)
         state.training.start(cfg)

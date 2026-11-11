@@ -77,8 +77,43 @@ def _project_file(name, root):
 
 def validation_settings(project):
     saved = project.get('validation')
-    defaults = dict(source_folder='', manifest='', stats={}, enabled=False, interval_steps=None)
+    defaults = dict(source_folder='', manifest='', stats={}, enabled=False, interval_steps=None,
+                    dense_enabled=False, dense_start_step=None, dense_end_step=None, dense_interval_steps=None)
     return {**defaults, **saved} if isinstance(saved, dict) else defaults
+
+
+def normalize_dense_validation(enabled, start, end, interval):
+    """Validate the optional second validation interval for one step range."""
+    enabled = bool(enabled)
+    values = []
+    for value in (start, end, interval):
+        if value is None:
+            values.append(None)
+            continue
+        if isinstance(value, bool):
+            raise ValueError('Dense validation steps must be positive whole numbers.')
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError('Dense validation steps must be positive whole numbers.') from exc
+        if number != value or number < 1:
+            raise ValueError('Dense validation steps must be positive whole numbers.')
+        values.append(number)
+    start, end, interval = values
+    if enabled:
+        if None in values:
+            raise ValueError('Enter the dense validation start step, end step and interval.')
+        if end < start:
+            raise ValueError('Dense validation end step must not be before its start step.')
+    return dict(dense_enabled=enabled, dense_start_step=start, dense_end_step=end, dense_interval_steps=interval)
+
+
+def dense_validation(settings):
+    """Trainer-facing dense range, or None when disabled."""
+    if not settings.get('dense_enabled'):
+        return None
+    return dict(start_step=settings['dense_start_step'], end_step=settings['dense_end_step'],
+                interval_steps=settings['dense_interval_steps'])
 
 
 def normalize_validation_interval(value):
@@ -96,7 +131,8 @@ def normalize_validation_interval(value):
 
 @project_transaction
 def configure_validation(project, *, source_folder=_UNSET, enabled=_UNSET,
-                         interval_steps=_UNSET, root='training'):
+                         interval_steps=_UNSET, dense_enabled=_UNSET, dense_start_step=_UNSET,
+                         dense_end_step=_UNSET, dense_interval_steps=_UNSET, root='training'):
     """Save validation options without rewriting either manifest."""
     meta = load_project(project, root)
     if not meta:
@@ -112,6 +148,12 @@ def configure_validation(project, *, source_folder=_UNSET, enabled=_UNSET,
         settings['enabled'] = bool(enabled)
     if interval_steps is not _UNSET:
         settings['interval_steps'] = normalize_validation_interval(interval_steps)
+    dense = dict(dense_enabled=dense_enabled, dense_start_step=dense_start_step,
+                 dense_end_step=dense_end_step, dense_interval_steps=dense_interval_steps)
+    if any(value is not _UNSET for value in dense.values()):
+        merged = {key: settings.get(key) if value is _UNSET else value for key, value in dense.items()}
+        settings.update(normalize_dense_validation(merged['dense_enabled'], merged['dense_start_step'],
+                                                   merged['dense_end_step'], merged['dense_interval_steps']))
     if settings != previous:
         meta['validation'] = settings
         _atomic_write(_project_file(project, root), json.dumps(meta, indent=2, ensure_ascii=False).encode('utf-8'))
@@ -406,7 +448,8 @@ def validate_validation_manifest(project, training_manifest, root='training', *,
             training_raw, training_rows = _read_manifest_data(training_manifest, 'training')
             _check_validation_overlap(training_rows, rows)
             return dict(rows=rows, fingerprint=fingerprint, interval_steps=interval, manifest=status['manifest'],
-                        training_fingerprint=hashlib.sha256(training_raw).hexdigest())
+                        training_fingerprint=hashlib.sha256(training_raw).hexdigest(),
+                        dense=dense_validation(settings))
 
 
 def list_projects(root='training'):

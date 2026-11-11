@@ -12,7 +12,7 @@ class TrainingManager:
         self.on_finished=None
         # Called only after acquiring the shared activity lease (e.g. evict inference weights).
         self.before_start=None
-        self.state={'running':False,'failed':False,'step':0,'total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':'',
+        self.state={'running':False,'failed':False,'step':0,'total':0,'schedule_total':0,'epoch':0,'loss':None,'elapsed':0.0,'eta':0.0,'message':'Idle.','output':'',
                     'started_at':None,'finished_at':None,'output_dir':'','project':'','adapter':''}
     def _update(self,**kw):
         with self.lock: self.state.update({k:v for k,v in kw.items() if v is not None})
@@ -43,7 +43,7 @@ class TrainingManager:
         with self.lock:
             # Assign directly: _update() ignores None, which used to leave the previous
             # run's loss/epoch/ETA visible until the first step of the new run.
-            self.state.update(running=True,failed=False,step=0,total=0,epoch=0,loss=None,elapsed=0.0,eta=0.0,
+            self.state.update(running=True,failed=False,step=0,total=0,schedule_total=0,epoch=0,loss=None,elapsed=0.0,eta=0.0,
                               message='Starting experimental LoRA training…',output='',started_at=time.time(),finished_at=None,
                               output_dir=str(config.get('output_dir') or ''),project=str(config.get('project') or ''),
                               adapter=Path(str(config.get('output_dir') or '')).name)
@@ -57,7 +57,13 @@ class TrainingManager:
                     from .trainer import train_lora
                 result=train_lora(config,self._update,self.stop_event)
                 outcome='stopped' if result.get('stopped') else 'succeeded'
-                self._update(running=False,output=result.get('output',''),finished_at=time.time(),message='Training stopped.' if result.get('stopped') else 'Training complete.')
+                if result.get('stopped'):
+                    message='Training stopped.'
+                elif result.get('early_stopped'):
+                    message=f"Training finished early at step {result.get('step')} (LR schedule {result.get('schedule_total') or result.get('total')})."
+                else:
+                    message='Training complete.'
+                self._update(running=False,output=result.get('output',''),finished_at=time.time(),message=message)
             except Exception as exc:
                 import traceback; traceback.print_exc(); self._update(running=False,failed=True,finished_at=time.time(),message=f'Training failed: {type(exc).__name__}: {exc}')
                 # A failed CUDA step can otherwise leave the large GPT/Whisper

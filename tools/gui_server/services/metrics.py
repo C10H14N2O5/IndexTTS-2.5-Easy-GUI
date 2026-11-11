@@ -36,8 +36,18 @@ def read(name: str, adapter: str | None = None, max_points: int = 2000) -> dict:
     root = projects.output_dir(name, adapter)
     logdir = root / "tensorboard"
     result = dict(project=name, adapter=root.name, logdir=str(logdir), series=[], available=False, error=None)
+    _read_events(logdir, result, max_points)
+    from . import posthoc
+    extra = posthoc.series(name, root)
+    if extra is not None:
+        result["series"].append({**extra, "points": sample_points(extra["points"], max_points)})
+        result["available"] = True
+    return result
+
+
+def _read_events(logdir: Path, result: dict, max_points: int) -> None:
     if not logdir.is_dir() or not any(logdir.glob("events.out.tfevents.*")):
-        return result
+        return
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     try:
         # Reservoir bounded independently of file size. A second deterministic pass
@@ -53,4 +63,3 @@ def read(name: str, adapter: str | None = None, max_points: int = 2000) -> dict:
     except (OSError, ValueError) as exc:
         # An event file can be partially appended while the trainer is running.
         result["error"] = str(exc)
-    return result

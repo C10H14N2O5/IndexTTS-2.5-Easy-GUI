@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from indextts_training import dataset
+from indextts_training.schedule import read_adapter_state
 from .. import paths
 from ..errors import Busy, Conflict, NotFound, ServiceError
 from ..i18n import msg, raw
@@ -24,6 +25,8 @@ class TrainingConfig(ApiModel):
     training_epochs: int = Field(20, ge=1, le=500)
     save_steps: int = Field(100, ge=1, le=2000)
     save_epochs: int = Field(2, ge=1, le=100)
+    early_stop_enabled: bool = False
+    early_stop_step: int = Field(500, ge=1, le=1_000_000)
     lora_rank: Literal[4, 8, 16, 32, 64, 128, 256] = 16
     lora_alpha: int = Field(32, ge=1, le=512)
     lora_dropout: float = Field(0.05, ge=0, le=0.2)
@@ -86,6 +89,10 @@ class ValidationConfig(OpenModel):
     stats: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = False
     interval_steps: int | None = None
+    dense_enabled: bool = False
+    dense_start_step: int | None = None
+    dense_end_step: int | None = None
+    dense_interval_steps: int | None = None
 
 
 class ProjectInfo(OpenModel):
@@ -111,6 +118,7 @@ class CheckpointInfo(ApiModel):
     modified: float
     evaluation: str | None = None
     resumable: bool = False
+    early_stopped: bool = False
 
 
 def normalized_name(value: str, *, adapter: bool = False) -> str:
@@ -222,7 +230,9 @@ def update_validation(name: str, patch: dict) -> dict:
     with dataset.DATASET_LOCK:
         ensure_mutable()
         load_raw(name)
-        values = {k: v for k, v in patch.items() if k in {"enabled", "interval_steps", "source_folder"}}
+        values = {k: v for k, v in patch.items() if k in {
+            "enabled", "interval_steps", "source_folder", "dense_enabled", "dense_start_step", "dense_end_step",
+            "dense_interval_steps"}}
         if "source_folder" in values:
             requested = str(values["source_folder"] or "").strip()
             suggested = paths.VALIDATION_DIR / name
@@ -324,9 +334,45 @@ def checkpoints(name: str, adapter: str | None = None) -> list[dict]:
             continue
         suffix = folder.name.rsplit("-", 1)[-1]
         step = int(suffix) if suffix.isdigit() else None
-        audio = root / "evaluation" / f"eval-step-{step:06d}.wav" if step is not None else None
+        sidecar = read_adapter_state(folder)
+        if step is None and sidecar:
+            step = sidecar["step"]
+        # The final adapter's step now comes from its sidecar; its preview audio
+        # stays attached to the matching checkpoint only (unchanged listing contract).
+        audio = root / "evaluation" / f"eval-step-{step:06d}.wav" if step is not None and not final else None
         result.append(dict(name=folder.name, path=str(folder.resolve()), adapter=root.name,
                            kind="final" if final else "checkpoint", step=step, modified=folder.stat().st_mtime,
                            evaluation=str(audio.resolve()) if audio and audio.is_file() else None,
-                           resumable=(folder / "trainer_state.pt").is_file()))
+                           resumable=(folder / "trainer_state.pt").is_file(),
+                           early_stopped=bool(sidecar and sidecar.get("early_stopped"))))
+    return result
+
+
+class AdapterFolder(ApiModel):
+    name: str
+    path: str
+    checkpoints: int
+    has_final: bool
+    modified: float
+    is_project_adapter: bool
+
+
+def adapter_folders(name: str) -> list[dict]:
+    """Training output folders that contain at least one saved adapter."""
+    project_adapter = training_values(load_raw(name))["adapter_name"] or name
+    result = []
+    root = paths.TRAINING_OUTPUTS_DIR
+    if root.is_dir():
+        for folder in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            if not folder.is_dir() or folder.is_symlink() or paths.safe_name(folder.name) != folder.name:
+                continue
+            saved = [child for child in folder.iterdir() if child.is_dir() and (child / "adapter_config.json").is_file()
+                     and (child.name == "final_adapter" or child.name.startswith("checkpoint-"))]
+            if not saved:
+                continue
+            result.append(dict(name=folder.name, path=str(folder.resolve()),
+                               checkpoints=sum(child.name != "final_adapter" for child in saved),
+                               has_final=any(child.name == "final_adapter" for child in saved),
+                               modified=max(child.stat().st_mtime for child in saved),
+                               is_project_adapter=folder.name == project_adapter))
     return result

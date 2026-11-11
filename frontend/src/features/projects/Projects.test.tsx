@@ -1,14 +1,14 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useEffect, useImperativeHandle, type Ref } from 'react';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { bootstrapKey } from '@/app/bootstrap';
-import { useLive } from '@/api/live';
+import { applyEvent, useLive } from '@/api/live';
 import { setLanguage } from '@/i18n';
 import { testBootstrap } from '@/features/synthesis/testFixtures';
-import { projectFixture, idleTraining, trainingDefaults } from './testFixtures';
+import { adapterFolders, checkpointsFixture, posthocFixture, posthocJob, projectFixture, idleTraining, trainingDefaults } from './testFixtures';
 import ProjectsPage from './ProjectsPage';
 import ProjectLayout from './ProjectLayout';
 import TrainingPage from './TrainingPage';
@@ -24,19 +24,24 @@ vi.mock('@/features/proofread/ProofreadPanel', () => ({ ProofreadPanel: function
   useEffect(() => { onContextLockedChange?.(guard.locked); return () => onContextLockedChange?.(false); }, [onContextLockedChange]);
   return <div><div data-testid="proofreader">{JSON.stringify({ project: props.project, directory: props.directory, role: props.role, language: props.language })}</div><button onClick={() => props.onContextLockedChange?.(false)}>Resolve mock edits</button><button onClick={() => { project.dataset_status = { ...project.dataset_status, stale: true, message: 'Training manifest needs updating.' }; props.onUpdated?.(); }}>Mock saved transcript</button></div>;
 } }));
-let client: QueryClient; let project: Project;
+let client: QueryClient; let project: Project; let metricSeries: { label: string; points: [number, number][]; count: number }[] = [];
 beforeEach(() => {
   setLanguage('en_US'); localStorage.clear(); project = projectFixture(); guard.allow = true; guard.locked = false; guard.order = [];
   useLive.setState({ ready: true, connection: 'open', jobs: {}, jobOrder: [], training: null, export: null });
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); client.setQueryData(bootstrapKey, testBootstrap());
-  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.scrollIntoView = vi.fn(); Element.prototype.hasPointerCapture = vi.fn(() => false); Element.prototype.setPointerCapture = vi.fn(); Element.prototype.releasePointerCapture = vi.fn(); metricSeries = [];
   vi.stubGlobal('ResizeObserver', class { observe = vi.fn(); unobserve = vi.fn(); disconnect = vi.fn(); });
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/training/defaults') return Response.json(trainingDefaults);
     if (url === '/api/training/status') return Response.json(idleTraining);
     if (url === '/api/training/start') return Response.json({ ...idleTraining, running: true, status: 'running', project: 'voice', total: 1000 });
-    if (url.includes('/checkpoints')) return Response.json([{ name: 'checkpoint-100', path: 'D:/out/checkpoint-100', adapter: 'voice', kind: 'checkpoint', step: 100, modified: 123, resumable: true }]);
-    if (url.includes('/metrics')) return Response.json({ project: 'voice', adapter: 'voice', logdir: '', available: false, error: '', series: [] });
+    const adapter = new URL(url, 'http://local').searchParams.get('adapter') ?? 'voice';
+    if (url.includes('/checkpoints')) return Response.json(checkpointsFixture(adapter));
+    if (url.includes('/metrics')) return Response.json({ project: 'voice', adapter, logdir: '', available: metricSeries.length > 0, error: '', series: metricSeries });
+    if (url.endsWith('/adapters')) return Response.json(adapterFolders);
+    if (url.includes('/validation-results')) return Response.json(posthocFixture(adapter));
+    if (url.endsWith('/validation-runs')) return Response.json({ job: posthocJob }, { status: 202 });
+    if (url.startsWith('/api/jobs/')) return Response.json(useLive.getState().jobs[posthocJob.id] ?? posthocJob);
     if (init?.method === 'PUT') { const body = JSON.parse(String(init.body)); if (String(url).endsWith('/training')) project = { ...project, training: body }; else if (String(url).endsWith('/validation')) project = { ...project, validation: { ...project.validation, ...body } }; else project = { ...project, ...body }; return Response.json(project); }
     if (init?.method === 'DELETE') return Response.json({ deleted: 'voice' });
     if (url === '/api/projects/voice/clone') return Response.json({ ...project, project_name: 'voice_copy' });
@@ -120,6 +125,78 @@ describe('project workbench', () => {
   it('creates a project from the list with explicit pending mutation', async () => {
     mount('/projects'); await userEvent.click(screen.getByRole('button', { name: 'New project' })); await userEvent.type(screen.getByRole('textbox', { name: 'Project name' }), 'new_voice'); await userEvent.click(screen.getByRole('button', { name: 'Create project' }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url, init]) => url === '/api/projects' && init?.method === 'POST')).toBe(true));
+  });
+});
+
+const requests = (match: (url: string, init?: RequestInit) => boolean) => vi.mocked(fetch).mock.calls.filter(([url, init]) => match(String(url), init));
+const rowOf = (text: string) => screen.getByText(text).closest('tr')!;
+describe('early stop and dense validation', () => {
+  it('saves early stop settings and blocks a stop step at or beyond the planned schedule', async () => {
+    mount(); await screen.findByText('Training setup'); await userEvent.click(screen.getByRole('switch', { name: 'Early stop' }));
+    const stop = screen.getByRole('spinbutton', { name: 'Stop at step' }); expect(screen.getByText(/still follows the planned 1000 steps\./)).toBeInTheDocument();
+    await userEvent.clear(stop); await userEvent.type(stop, '1000');
+    expect(screen.getAllByText('The early stop step must be smaller than the planned 1000 training steps.').length).toBeGreaterThan(0); expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Save and start training' })).toBeDisabled();
+    await userEvent.clear(stop); await userEvent.type(stop, '400'); await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(project.training).toMatchObject({ early_stop_enabled: true, early_stop_step: 400 }));
+  });
+  it('estimates the planned schedule in epoch mode from usable clips', async () => {
+    project.training = { ...project.training, mode: 'Epochs', early_stop_enabled: true, early_stop_step: 40 }; mount(); await screen.findByText('Training setup');
+    expect(screen.getByText(/planned 40 steps \(estimated from 12 usable clips\)/)).toBeInTheDocument(); expect(screen.getAllByText('The early stop step must be smaller than the planned 40 training steps.').length).toBeGreaterThan(0);
+  });
+  it('rejects an early stop step that the resume checkpoint already passed', async () => {
+    project.training = { ...project.training, early_stop_enabled: true, early_stop_step: 150, resume_checkpoint: 'D:/out/voice/checkpoint-step-000200' }; mount();
+    expect((await screen.findAllByText('The resume checkpoint is already at step 200; choose an early stop step after it.')).length).toBeGreaterThan(0); expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled();
+  });
+  it('shows the LR schedule length when a run stops early', async () => {
+    useLive.setState({ training: { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 10, total: 400, schedule_total: 1000 } }); mount();
+    expect(await screen.findByText('10 / 400 steps')).toBeInTheDocument(); expect(screen.getByText('LR schedule 1000 steps')).toBeInTheDocument();
+  });
+  it('round-trips the dense validation range and rejects an inverted range', async () => {
+    project.validation = { ...project.validation, dense_enabled: true, dense_start_step: 200, dense_end_step: 400, dense_interval_steps: 20 }; mount('/projects/voice/validation');
+    const end = await screen.findByRole('spinbutton', { name: 'Range end step' }); expect(screen.getByRole('spinbutton', { name: 'Range start step' })).toHaveValue(200); expect(end).toHaveValue(400); expect(screen.getByRole('spinbutton', { name: 'Range interval (steps)' })).toHaveValue(20);
+    await userEvent.clear(end); await userEvent.type(end, '100'); expect(screen.getByText('The dense range must start at or before its end step.')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Save validation' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Build validation manifest' })).toBeDisabled();
+    await userEvent.clear(end); await userEvent.type(end, '600'); await userEvent.click(screen.getByRole('button', { name: 'Save validation' }));
+    await waitFor(() => expect(project.validation).toMatchObject({ dense_enabled: true, dense_start_step: 200, dense_end_step: 600, dense_interval_steps: 20 }));
+  });
+  it('requires every dense field once the range is enabled', async () => {
+    mount('/projects/voice/validation'); await userEvent.click(await screen.findByRole('switch', { name: 'Dense validation range' }));
+    expect(screen.getByText('Enter a start step, end step and interval of at least 1 for the dense range.')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Save validation' })).toBeDisabled();
+    for (const [name, value] of [['Range start step', '300'], ['Range end step', '500'], ['Range interval (steps)', '25']] as const) await userEvent.type(screen.getByRole('spinbutton', { name }), value);
+    await userEvent.click(screen.getByRole('button', { name: 'Save validation' }));
+    await waitFor(() => expect(requests((url, init) => url.endsWith('/validation') && init?.method === 'PUT')).toHaveLength(1));
+    expect(JSON.parse(String(requests((url, init) => url.endsWith('/validation') && init?.method === 'PUT')[0]?.[1]?.body))).toMatchObject({ dense_enabled: true, dense_start_step: 300, dense_end_step: 500, dense_interval_steps: 25, prepare: false });
+  });
+});
+
+describe('post-hoc validation loss', () => {
+  it('shows post-hoc and training-time validation loss for each checkpoint', async () => {
+    metricSeries = [{ label: 'validation/loss', points: [[100, 1.3], [200, 1.2]], count: 2 }]; mount('/projects/voice/outputs'); await screen.findByText('1.2346');
+    expect(within(rowOf('checkpoint-step-000100')).getByText('1.3000')).toBeInTheDocument(); expect(within(rowOf('checkpoint-step-000100')).queryByText('Outdated')).not.toBeInTheDocument();
+    const late = rowOf('checkpoint-step-000200'); expect(within(late).getByText('1.1000')).toBeInTheDocument(); expect(within(late).getByText('Outdated')).toBeInTheDocument(); expect(within(late).getByText('Early stop')).toBeInTheDocument(); expect(within(late).getByText('1.2000')).toBeInTheDocument();
+    expect(screen.getByText('Base model (no adapter)')).toBeInTheDocument(); expect(screen.getByText('2.5000')).toBeInTheDocument(); expect(screen.getByText('6 clips · fingerprint abcdef12')).toBeInTheDocument();
+    expect(screen.getByText('The adapter was trained with a different validation set, so its training-time curve is not directly comparable.')).toBeInTheDocument(); expect(screen.getAllByRole('link', { name: 'Resume training' })).toHaveLength(2);
+  });
+  it('selects missing results and posts the chosen checkpoints, then tracks the job', async () => {
+    mount('/projects/voice/outputs'); await screen.findByText('1.2346'); const compute = screen.getByRole('button', { name: 'Compute selected' }); expect(compute).toBeDisabled(); expect(screen.getByText('Select checkpoints or include the base model.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Select missing' }));
+    expect(screen.getByRole('checkbox', { name: 'Select checkpoint-step-000200' })).toBeChecked(); expect(screen.getByRole('checkbox', { name: 'Select final_adapter' })).toBeChecked(); expect(screen.getByRole('checkbox', { name: 'Select checkpoint-step-000100' })).not.toBeChecked();
+    await userEvent.click(screen.getByRole('switch', { name: 'Include base model (no adapter)' })); await userEvent.click(screen.getByRole('button', { name: 'Compute selected' }));
+    await waitFor(() => expect(requests((url, init) => url.endsWith('/validation-runs') && init?.method === 'POST')).toHaveLength(1));
+    expect(JSON.parse(String(requests(url => url.endsWith('/validation-runs'))[0]?.[1]?.body))).toEqual({ adapter: 'voice', checkpoints: ['checkpoint-step-000200', 'final_adapter'], include_baseline: true, recompute: false });
+    expect(await screen.findByText('Computing validation loss.')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Cancel task' })).toBeInTheDocument();
+  });
+  it('switches adapters for checkpoints and results and hides resume for other adapters', async () => {
+    mount('/projects/voice/outputs'); await screen.findByText('checkpoint-step-000100');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Adapter' })); await userEvent.click(await screen.findByRole('option', { name: /^old_voice/ }));
+    expect(await screen.findByText('checkpoint-step-000050')).toBeInTheDocument(); expect(screen.queryByText('checkpoint-step-000100')).not.toBeInTheDocument(); expect(screen.queryByRole('link', { name: 'Resume training' })).not.toBeInTheDocument();
+    expect(requests(url => url.includes('/validation-results?adapter=old_voice')).length).toBeGreaterThan(0); expect(requests(url => url.includes('/checkpoints?adapter=old_voice')).length).toBeGreaterThan(0);
+  });
+  it('shows an already running post-hoc job after a refresh and reloads results when it ends', async () => {
+    useLive.setState({ jobs: { [posthocJob.id]: posthocJob }, jobOrder: [posthocJob.id] }); mount('/projects/voice/outputs');
+    expect(await screen.findByText('Computing validation loss.')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Compute selected' })).toBeDisabled();
+    const before = requests(url => url.includes('/validation-results')).length;
+    act(() => applyEvent('job', { ...posthocJob, state: 'succeeded', progress: 1, finished_at: Date.now() / 1000 }));
+    await waitFor(() => expect(requests(url => url.includes('/validation-results')).length).toBeGreaterThan(before)); expect(screen.getByText('Computing validation loss.')).toBeInTheDocument();
   });
 });
 

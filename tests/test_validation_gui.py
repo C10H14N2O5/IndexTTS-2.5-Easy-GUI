@@ -168,6 +168,81 @@ class ValidationGuiTests(GuiApiTestCase):
         # disabled validation set as enabled just because its directory exists.
         self.assertEqual(load_project('demo', paths.TRAINING_DIR)['training']['learning_rate'], .001)
 
+    def put_validation(self, **values):
+        return self.client.put('/api/projects/demo/validation', json=values)
+
+    def test_dense_validation_fields_roundtrip_and_reject_invalid_ranges(self):
+        directory = self.make_validation()
+        defaults = self.client.get('/api/projects/demo').json()['validation']
+        self.assertEqual((defaults['dense_enabled'], defaults['dense_start_step'], defaults['dense_end_step'],
+                          defaults['dense_interval_steps']), (False, None, None, None))
+        dense = dict(dense_enabled=True, dense_start_step=100, dense_end_step=300, dense_interval_steps=25)
+        response = self.put_validation(source_folder=str(directory), **dense)
+        self.assertEqual(response.status_code, 200, response.text)
+        for source in (response.json()['validation'], self.client.get('/api/projects/demo').json()['validation'],
+                       load_project('demo', paths.TRAINING_DIR)['validation']):
+            self.assertEqual({key: source[key] for key in dense}, dense)
+        # A partial update merges with the saved range; a single-step range is allowed.
+        response = self.put_validation(dense_end_step=100)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['validation']['dense_start_step'], 100)
+        self.assertEqual(response.json()['validation']['dense_end_step'], 100)
+        saved = load_project('demo', paths.TRAINING_DIR)
+        invalid = [
+            dict(dense_end_step=99),                                      # end before saved start
+            dict(dense_start_step=50, dense_end_step=40),
+            dict(dense_interval_steps=None),                              # enabled with a missing value
+            dict(dense_enabled=True, dense_start_step=None),
+            dict(dense_start_step=0), dict(dense_end_step=-5), dict(dense_interval_steps=0),
+            dict(dense_start_step=1.5), dict(dense_start_step='abc'),
+        ]
+        for patch in invalid:
+            with self.subTest(patch=patch):
+                rejected = self.put_validation(**patch)
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                self.assertEqual(load_project('demo', paths.TRAINING_DIR), saved)
+        # Disabling keeps the remembered values; a disabled range may be incomplete.
+        response = self.put_validation(dense_enabled=False, dense_interval_steps=None)
+        self.assertEqual(response.status_code, 200, response.text)
+        validation = response.json()['validation']
+        self.assertEqual((validation['dense_enabled'], validation['dense_start_step'], validation['dense_end_step'],
+                          validation['dense_interval_steps']), (False, 100, 100, None))
+        rejected = self.put_validation(dense_enabled=True)
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertIn('dense validation', rejected.json()['error']['message'])
+        # Unrelated validation updates never touch the dense settings.
+        self.assertEqual(self.put_validation(interval_steps=3).status_code, 200)
+        self.assertEqual(load_project('demo', paths.TRAINING_DIR)['validation']['dense_start_step'], 100)
+
+    def test_dense_range_is_passed_to_the_trainer(self):
+        captures = []
+        def tiny_trainer(config, callback, stop_event):
+            captures.append(config)
+            callback(step=1, total=1, epoch=1, loss=.5)
+            return {'output': '', 'stopped': False}
+        self.state.training.train_fn = tiny_trainer
+        directory = self.make_validation()
+        response = self.put_validation(source_folder=str(directory), enabled=True, prepare=True, interval_steps=10,
+                                       dense_enabled=True, dense_start_step=2, dense_end_step=8,
+                                       dense_interval_steps=3)
+        self.assertEqual(response.status_code, 200, response.text)
+
+        def start():
+            started = self.client.post('/api/training/start', json={'project': 'demo'})
+            self.assertEqual(started.status_code, 202, started.text)
+            self.wait_until(lambda: not self.state.training.snapshot()['running'])
+            self.state.training.thread.join(10)
+            return captures[-1]['validation']
+
+        validation = start()
+        self.assertEqual(validation['dense'], {'start_step': 2, 'end_step': 8, 'interval_steps': 3})
+        self.assertEqual(validation['interval_steps'], 10)
+        self.assertIsNone(captures[-1]['end_step'])
+        saved = json.loads((paths.TRAINING_OUTPUTS_DIR / 'demo/training_config.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['validation']['dense'], validation['dense'])
+        self.assertEqual(self.put_validation(dense_enabled=False).status_code, 200)
+        self.assertIsNone(start()['dense'])
+
     def test_start_allows_no_validation_folder_only_when_switch_is_off(self):
         captures = []
         def tiny_trainer(config, callback, stop_event):
