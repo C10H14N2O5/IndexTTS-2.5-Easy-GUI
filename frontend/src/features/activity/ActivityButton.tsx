@@ -17,7 +17,7 @@ export function ActivityButton() {
   const active = jobs.filter((job) => job.state === 'running'); const finished = jobs.filter((job) => job.state !== 'running');
   const exportRunning = exporting?.status === 'running' || exporting?.status === 'cancelling';
   const count = active.length + Number(Boolean(training?.running)) + Number(exportRunning);
-  return <Popover open={open} onOpenChange={setOpen} trigger={<Button variant="text" size="sm" icon={Activity} aria-label={count ? t('Activity: {0} running', count) : t('Activity')}>{t('Activity')}{count > 0 && <Badge tone="accent">{count}</Badge>}</Button>}>
+  return <Popover open={open} onOpenChange={setOpen} className={styles.popover} trigger={<Button variant="text" size="sm" icon={Activity} aria-label={count ? t('Activity: {0} running', count) : t('Activity')}>{t('Activity')}{count > 0 && <Badge tone="accent">{count}</Badge>}</Button>}>
       <div className={styles.panel} role="region" aria-label={t('Activity')}>
         <h2 className={styles.sectionTitle}>{t('Activity')}</h2>
         <p className={styles.meta}>{t('Current work, recent completions, and useful status details.')}</p>

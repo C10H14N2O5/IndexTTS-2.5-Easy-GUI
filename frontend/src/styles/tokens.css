@@ -67,6 +67,14 @@
   --duration-emphasized: 400ms;
   --duration-page: 400ms;
   --page-shift: 8px;
+  /* Glides: the sidebar marker and segmented-control thumb decelerate into place. */
+  --ease-glide: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-glide: 450ms;
+  --duration-thumb: 320ms;
+  /* Theme sweep: a frosted band crosses the page from right to left. */
+  --ease-sweep: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-theme: 800ms;
+  --theme-scan-width: 180px;
 
   /* State layer opacities */
   --state-hover: 8%;
@@ -142,6 +150,9 @@
     --duration-long: 0ms;
     --duration-emphasized: 0ms;
     --duration-page: 0ms;
+    --duration-glide: 0ms;
+    --duration-thumb: 0ms;
+    --duration-theme: 0ms;
     --page-shift: 0px;
   }
 }

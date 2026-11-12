@@ -79,6 +79,73 @@ a:hover {
   white-space: nowrap;
 }
 
+/*
+ * Theme sweep (app/theme.ts). The new theme is revealed from the right edge
+ * while a frosted band, centred on the reveal edge, crosses the page. Both use
+ * the same duration and easing so the band's centre line tracks the edge.
+ */
+html[data-theme-transition]::view-transition-old(root),
+html[data-theme-transition]::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+html[data-theme-transition]::view-transition-new(root) {
+  animation: theme-reveal var(--duration-theme) var(--ease-sweep) both;
+}
+
+html[data-theme-transition]::view-transition-group(theme-scan) {
+  animation: theme-scan var(--duration-theme) var(--ease-sweep) both;
+  backdrop-filter: blur(14px) saturate(1.4);
+  mask-image: linear-gradient(90deg, transparent, #000 30%, #000 70%, transparent);
+}
+
+html[data-theme-transition]::view-transition-old(theme-scan),
+html[data-theme-transition]::view-transition-new(theme-scan) {
+  animation: none;
+}
+
+.theme-scan {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--theme-scan-width);
+  /* Only the transition snapshot is visible; the element itself stays off-screen. */
+  translate: -100% 0;
+  pointer-events: none;
+  view-transition-name: theme-scan;
+  background:
+    linear-gradient(90deg,
+      transparent calc(50% - 1px),
+      color-mix(in srgb, var(--color-accent) 55%, #fff) calc(50% - 1px) calc(50% + 1px),
+      transparent calc(50% + 1px)),
+    linear-gradient(90deg,
+      transparent,
+      color-mix(in srgb, var(--color-bg) 30%, transparent) 35%,
+      color-mix(in srgb, #fff 16%, transparent) 50%,
+      color-mix(in srgb, var(--color-bg) 30%, transparent) 65%,
+      transparent);
+}
+
+@keyframes theme-reveal {
+  from {
+    clip-path: inset(0 0 0 calc(100% + var(--theme-scan-width) / 2));
+  }
+  to {
+    clip-path: inset(0 0 0 calc(var(--theme-scan-width) / -2));
+  }
+}
+
+@keyframes theme-scan {
+  from {
+    transform: translateX(100vw);
+  }
+  to {
+    transform: translateX(calc(-1 * var(--theme-scan-width)));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

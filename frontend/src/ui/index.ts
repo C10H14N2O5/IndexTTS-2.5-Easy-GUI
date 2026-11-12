@@ -8,3 +8,4 @@ export * from './FileBrowser';
 export * from './LogConsole';
 export * from './LineChart';
 export * from './Motion';
+export * from './glide';

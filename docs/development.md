@@ -69,6 +69,10 @@ pnpm --dir frontend dev
 
 页面过渡由 `ui/Motion.tsx` 的 `RouteTransition` 负责：`scope` 改变时用 Web Animations API 以平缓的 ease 曲线（`--ease-page`）播放 400ms 淡入上移，不使用 `key`，因此不会重新挂载子组件或丢失草稿。`AppShell` 以页面路径为 scope（项目工作台整体视为一页），`ProjectLayout` 以标签页为 scope。减少动态效果或不支持该 API 时直接跳过。
 
+侧栏当前项竖条和 `SegmentedControl` 的选中底块使用 `ui/glide.ts` 的 `useGlideIndicator`：读取当前元素的 `offsetLeft`/`offsetTop`/尺寸，写成 CSS 变量，由样式以 `--ease-glide` 过渡（侧栏 `--duration-glide` 450ms，底块 `--duration-thumb` 320ms）。首次定位、容器尺寸变化（侧栏折叠、切换语言）时加 `data-instant` 直接跳到位置，只有选中项变化才滑动。
+
+明暗切换由 `app/theme.ts` 用 View Transitions 实现（仅用于主题，页面切换仍用 `RouteTransition`）：新主题以 `clip-path` 从右向左展开，`.theme-scan` 毛玻璃带以相同时长和曲线（`--duration-theme` 800ms、`--ease-sweep`）跟随分界线，样式在 `styles/global.css`。首次应用、浏览器不支持、页面在后台或减少动态效果时直接切换；新的切换会跳过仍在进行的扫描。下拉框、弹出面板和折叠面板的退出动画依赖 Radix `Presence` 等待 `data-state=closed` 的动画结束后再卸载。
+
 ## 安全边界
 
 这是可信本机/局域网工具，不包含账户鉴权；**不要直接暴露到公网**。文件浏览器是服务端文件浏览器，不是浏览器客户端磁盘。媒体接口只允许业务白名单路径；上传有 200 MiB 内容上限，外层请求体也限流，临时上传启动时及下次上传时清理 24 小时前的文件。

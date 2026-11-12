@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
 import { setLanguage } from '@/i18n';
 import { api } from '@/api/client';
-import { Button, Disclosure, Field, ParamField, Select, Switch, TextInput } from './Controls';
-import { ConfirmDialog, Toaster } from './Feedback';
+import { Button, Disclosure, Field, ParamField, SegmentedControl, Select, Switch, TextInput } from './Controls';
+import { ConfirmDialog, Popover, Toaster } from './Feedback';
 import { getToasts, toast } from './toast';
 import { AudioInput } from './Audio';
 import { FileBrowserDialog } from './FileBrowser';
@@ -48,6 +48,25 @@ describe('shared controls',()=>{
  });
  it('discloses advanced controls without losing keyboard semantics',async()=>{
   render(<Disclosure title="Advanced" modifiedCount={2}><TextInput aria-label="Beam count"/></Disclosure>);const trigger=screen.getByRole('button',{name:/Advanced/});expect(trigger).toHaveAttribute('aria-expanded','false');await userEvent.click(trigger);expect(trigger).toHaveAttribute('aria-expanded','true');expect(screen.getByRole('textbox',{name:'Beam count'})).toBeVisible();
+ });
+ it('collapses a disclosure again and keeps its body in an inner container',async()=>{
+  render(<Disclosure title="Advanced"><TextInput aria-label="Beam count"/></Disclosure>);const trigger=screen.getByRole('button',{name:/Advanced/});
+  await userEvent.click(trigger);const input=screen.getByRole('textbox',{name:'Beam count'});expect(input.parentElement?.parentElement).toHaveAttribute('data-state','open');
+  await userEvent.click(trigger);await waitFor(()=>expect(screen.queryByRole('textbox',{name:'Beam count'})).not.toBeInTheDocument());
+ });
+ it('glides the segmented thumb onto the checked option',async()=>{
+  const radios=(element:HTMLElement)=>[...(element.parentElement?.querySelectorAll('[role=radio]')??[])].indexOf(element);
+  vi.spyOn(HTMLElement.prototype,'offsetLeft','get').mockImplementation(function(this:HTMLElement){return Math.max(radios(this),0)*100+3;});
+  vi.spyOn(HTMLElement.prototype,'offsetWidth','get').mockImplementation(function(this:HTMLElement){return this.getAttribute('role')==='radio'?96:0;});
+  function Appearance(){const [value,setValue]=useState<'light'|'dark'|'system'>('light');return <SegmentedControl aria-label="Appearance" value={value} onChange={setValue} options={[{value:'light',label:'Light'},{value:'dark',label:'Dark'},{value:'system',label:'Automatic'}]}/>;}
+  const {container}=render(<Appearance/>);const thumb=container.querySelector<HTMLElement>('[aria-hidden][style]');
+  expect(thumb).not.toBeNull();expect(thumb).not.toHaveAttribute('data-hidden');expect(thumb?.style.getPropertyValue('--thumb-x')).toBe('3px');expect(thumb?.style.getPropertyValue('--thumb-w')).toBe('96px');
+  await userEvent.click(screen.getByRole('radio',{name:'Automatic'}));
+  expect(screen.getByRole('radio',{name:'Automatic'})).toBeChecked();expect(thumb?.style.getPropertyValue('--thumb-x')).toBe('203px');expect(screen.getByRole('radiogroup',{name:'Appearance'})).toBeInTheDocument();
+ });
+ it('lets a popover add its own class for a custom width',()=>{
+  render(<Popover open trigger={<button type="button">Activity</button>} className="wide"><p>Running now</p></Popover>);
+  expect(screen.getByText('Running now').parentElement).toHaveClass('wide');
  });
 });
 
