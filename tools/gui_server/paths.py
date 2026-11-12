@@ -1,6 +1,9 @@
 """Directory layout shared by every service (moved from easy_gui.py)."""
 from __future__ import annotations
 
+import functools
+import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +65,53 @@ def safe_name(value: str) -> str:
     """Same rule as the 1.x GUI: keep alnum, '-', '_' and spaces; spaces become '_'."""
     safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in (value or "").strip())
     return safe.strip().replace(" ", "_")
+
+
+def _explorer_compare():
+    """Windows Explorer's name comparison (StrCmpLogicalW), or None off Windows."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        compare = ctypes.windll.shlwapi.StrCmpLogicalW
+        compare.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        compare.restype = ctypes.c_int
+        return compare
+    except (AttributeError, OSError):
+        return None
+
+
+_EXPLORER_COMPARE = _explorer_compare()
+
+
+def _fallback_key(value: str) -> tuple:
+    # Case-insensitive natural order: digit runs compare as numbers ("v2" < "v10").
+    return tuple((0, int(part)) if part.isdigit() else (1, part)
+                 for part in re.split(r"(\d+)", str(value).casefold()) if part)
+
+
+def natural_key(value: str):
+    """Sort key matching the File Explorer "Name" order (numbers compared numerically).
+
+    ``Hazel_v2_…`` < ``Hazel_v3_…`` < ``Hazel_v3-1_…`` < ``Hazel_v10_…``.
+    """
+    if _EXPLORER_COMPARE is not None:
+        return _ExplorerKey(str(value))
+    return _fallback_key(value)
+
+
+@functools.total_ordering
+class _ExplorerKey:
+    __slots__ = ("value",)
+
+    def __init__(self, value: str):
+        self.value = value
+
+    def __eq__(self, other):
+        return _EXPLORER_COMPARE(self.value, other.value) == 0
+
+    def __lt__(self, other):
+        return _EXPLORER_COMPARE(self.value, other.value) < 0
 
 
 def is_within(path: Path, parent: Path) -> bool:

@@ -193,6 +193,33 @@ class ConsoleBufferTests(unittest.TestCase):
         self.assertEqual(classify("plain text"), "plain")
 
 
+class NaturalSortTests(unittest.TestCase):
+    NAMES = ["Hazel_v3_27m158f_ga8_1580s", "hazel_v10_x", "Hazel_v3-1_27m158f_ga8_1580s_r8a16",
+             "Hazel_v2_13m92f_ga8", "Demo_Run", "Hazel_v3-2_a"]
+    EXPECTED = ["Demo_Run", "Hazel_v2_13m92f_ga8", "Hazel_v3_27m158f_ga8_1580s",
+                "Hazel_v3-1_27m158f_ga8_1580s_r8a16", "Hazel_v3-2_a", "hazel_v10_x"]
+
+    def test_matches_file_explorer_name_order(self):
+        self.assertEqual(sorted(self.NAMES, key=paths.natural_key), self.EXPECTED)
+
+    def test_fallback_is_case_insensitive_and_numeric(self):
+        with mock.patch.object(paths, "_EXPLORER_COMPARE", None):
+            ordered = sorted(["b10", "B2", "a", "b1"], key=paths.natural_key)
+        self.assertEqual(ordered, ["a", "b1", "B2", "b10"])
+
+    def test_adapter_folders_and_library_adapters_use_it(self):
+        from tools.gui_server.services import adapters, projects
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(paths, "TRAINING_OUTPUTS_DIR", Path(directory)), \
+                mock.patch.object(projects, "load_raw", return_value={"project_name": "demo"}):
+            for name in self.NAMES:
+                folder = Path(directory) / name / "final_adapter"
+                folder.mkdir(parents=True)
+                (folder / "adapter_config.json").write_text("{}", encoding="utf-8")
+            self.assertEqual([item["name"] for item in projects.adapter_folders("demo")], self.EXPECTED)
+            self.assertEqual([item["project"] for item in adapters.list_adapters()], self.EXPECTED)
+
+
 class AppTests(GuiApiTestCase):
 
     def test_bootstrap_and_settings(self):

@@ -7,7 +7,7 @@ from ..i18n import t
 
 def list_adapters() -> list[dict]:
     result = []
-    for project in sorted(paths.TRAINING_OUTPUTS_DIR.iterdir()):
+    for project in sorted(paths.TRAINING_OUTPUTS_DIR.iterdir(), key=lambda item: paths.natural_key(item.name)):
         if not project.is_dir() or project.is_symlink():
             continue
         named = [project / 'final_adapter', project / 'best_adapter']

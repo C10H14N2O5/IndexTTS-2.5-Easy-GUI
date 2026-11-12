@@ -184,7 +184,8 @@ def get(name: str) -> dict:
 
 def list_projects() -> list[dict]:
     result = []
-    for file in sorted(paths.TRAINING_PROJECTS_DIR.glob("*/project.json")):
+    for file in sorted(paths.TRAINING_PROJECTS_DIR.glob("*/project.json"),
+                       key=lambda item: paths.natural_key(item.parent.name)):
         if file.is_file() and not file.parent.is_symlink():
             try:
                 result.append(get(file.parent.name))
@@ -384,7 +385,7 @@ def adapter_folders(name: str) -> list[dict]:
     result = []
     root = paths.TRAINING_OUTPUTS_DIR
     if root.is_dir():
-        for folder in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+        for folder in sorted(root.iterdir(), key=lambda item: paths.natural_key(item.name)):
             if not folder.is_dir() or folder.is_symlink() or paths.safe_name(folder.name) != folder.name:
                 continue
             saved = [child for child in folder.iterdir() if child.is_dir() and (child / "adapter_config.json").is_file()
