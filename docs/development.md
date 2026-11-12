@@ -126,7 +126,7 @@ git ls-files | Set-Content -Encoding utf8 $inventory
 
 发布前还须使用 **1.1.0 的 `parse_manifest`** 校验新清单，检查必需启动文件、静态资源和环境输入完整。更新健康检查只做语法、导入、API 路由与 SPA 资源检查，不加载模型、不启动浏览器。
 
-[版本号](../tools/version.py)与[更新日志](CHANGELOG.md)同步维护。`pyproject.toml` 的 2.5.0 是上游包版本，不是 GUI 版本；它与 `uv.lock`、安装/验证脚本等属于环境输入，本次改造不改动它们，不要求重新安装。
+[版本号](../tools/version.py)、[前端依赖清单](../frontend/package.json)的 `version` 与[更新日志](CHANGELOG.md)同步维护，`test_version.py` 会检查三者一致。`pyproject.toml` 的 2.5.0 是上游包版本，不是 GUI 版本；它与 `uv.lock`、安装/验证脚本等属于环境输入，本次改造不改动它们，不要求重新安装。
 
 功能开发在 `feat/<名称>` 分支上进行，阶段性推送到两个远端：
 

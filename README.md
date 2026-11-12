@@ -4,9 +4,9 @@
 
 一个在 Windows 本地运行的 [IndexTTS 2.5](https://github.com/index-tts/index-tts) 图形界面。除了用参考音频克隆音色、合成语音，还可以整理自己的语料，训练 LoRA，并导出给 ComfyUI 使用。
 
-![IndexTTS 2.5 Easy GUI 中文浅色界面（模拟引擎演示）](<assets/webui-2-light.png>)
+![IndexTTS 2.5 Easy GUI 切换明暗主题时，毛玻璃扫描带从右向左扫过页面（模拟引擎演示）](<assets/webui-theme-sweep.png>)
 
-[查看英文深色界面](<assets/webui-2-dark.png>) · 截图使用隔离的模拟演示数据，不代表真实模型音质。
+[查看中文浅色界面](<assets/webui-2-light.png>) · [查看英文深色界面](<assets/webui-2-dark.png>) · 截图使用隔离的模拟演示数据，不代表真实模型音质。
 
 ## 功能
 

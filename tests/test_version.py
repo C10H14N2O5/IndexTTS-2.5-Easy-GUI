@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from pathlib import Path
@@ -23,6 +24,13 @@ class VersionTests(unittest.TestCase):
         releases = re.findall(r"^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$", self.changelog, re.MULTILINE)
         self.assertTrue(releases, "CHANGELOG has no released version heading")
         self.assertEqual(releases[0][0], __version__)
+
+    def test_frontend_package_version_matches(self):
+        # frontend/ is development-only and absent from ZIP installs.
+        package = ROOT / "frontend" / "package.json"
+        if not package.exists():
+            self.skipTest("frontend sources are not part of this install")
+        self.assertEqual(json.loads(package.read_text(encoding="utf-8"))["version"], __version__)
 
     def test_releases_are_in_descending_order(self):
         versions = [tuple(map(int, v.split("."))) for v in

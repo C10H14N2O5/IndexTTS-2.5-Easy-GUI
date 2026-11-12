@@ -18,6 +18,7 @@
     "assets/screenshot.png",
     "assets/webui-2-dark.png",
     "assets/webui-2-light.png",
+    "assets/webui-theme-sweep.png",
     "backends/__init__.py",
     "backends/trt/.gitignore",
     "backends/trt/README.md",

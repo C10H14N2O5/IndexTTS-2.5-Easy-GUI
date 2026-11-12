@@ -6,6 +6,8 @@ A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). 
 
 ![English dark interface, using isolated fake-engine demonstration data](<../assets/webui-2-dark.png>)
 
+[See the light/dark theme sweep](<../assets/webui-theme-sweep.png>) (Chinese interface). Screenshots use isolated fake-engine demonstration data and say nothing about real model quality.
+
 ## Features
 
 - **Voice Library**: upload or record reference clips and reuse them.
