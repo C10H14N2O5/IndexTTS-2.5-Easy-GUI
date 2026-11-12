@@ -27,6 +27,10 @@ class TrainingConfig(ApiModel):
     save_epochs: int = Field(2, ge=1, le=100)
     early_stop_enabled: bool = False
     early_stop_step: int = Field(500, ge=1, le=1_000_000)
+    auto_stop_enabled: bool = False
+    auto_stop_patience_steps: int = Field(200, ge=1, le=1_000_000)
+    auto_stop_min_delta: float = Field(0.005, ge=0, le=10)
+    auto_stop_watch_interval_steps: int = Field(25, ge=1, le=1_000_000)
     lora_rank: Literal[4, 8, 16, 32, 64, 128, 256] = 16
     lora_alpha: int = Field(32, ge=1, le=512)
     lora_dropout: float = Field(0.05, ge=0, le=0.2)
@@ -113,12 +117,14 @@ class CheckpointInfo(ApiModel):
     name: str
     path: str
     adapter: str
-    kind: Literal["final", "checkpoint"]
+    kind: Literal["final", "best", "checkpoint"]
     step: int | None = None
     modified: float
     evaluation: str | None = None
     resumable: bool = False
     early_stopped: bool = False
+    auto_stopped: bool = False
+    validation_loss: float | None = None
 
 
 def normalized_name(value: str, *, adapter: bool = False) -> str:
@@ -329,23 +335,36 @@ def checkpoints(name: str, adapter: str | None = None) -> list[dict]:
     for folder in sorted(root.glob("*")):
         if not folder.is_dir() or not (folder / "adapter_config.json").is_file():
             continue
-        final = folder.name == "final_adapter"
-        if not final and not folder.name.startswith("checkpoint-"):
+        kind = adapter_kind(folder.name)
+        if kind is None:
             continue
         suffix = folder.name.rsplit("-", 1)[-1]
         step = int(suffix) if suffix.isdigit() else None
         sidecar = read_adapter_state(folder)
         if step is None and sidecar:
             step = sidecar["step"]
-        # The final adapter's step now comes from its sidecar; its preview audio
+        # The final/best adapter's step comes from its sidecar; preview audio
         # stays attached to the matching checkpoint only (unchanged listing contract).
-        audio = root / "evaluation" / f"eval-step-{step:06d}.wav" if step is not None and not final else None
+        audio = root / "evaluation" / f"eval-step-{step:06d}.wav" if step is not None and kind == "checkpoint" else None
+        loss = sidecar.get("validation_loss") if sidecar else None
         result.append(dict(name=folder.name, path=str(folder.resolve()), adapter=root.name,
-                           kind="final" if final else "checkpoint", step=step, modified=folder.stat().st_mtime,
+                           kind=kind, step=step, modified=folder.stat().st_mtime,
                            evaluation=str(audio.resolve()) if audio and audio.is_file() else None,
                            resumable=(folder / "trainer_state.pt").is_file(),
-                           early_stopped=bool(sidecar and sidecar.get("early_stopped"))))
+                           early_stopped=bool(sidecar and sidecar.get("early_stopped")),
+                           auto_stopped=bool(sidecar and sidecar.get("auto_stopped")),
+                           validation_loss=float(loss) if isinstance(loss, (int, float)) else None))
     return result
+
+
+ADAPTER_KINDS = {"final_adapter": "final", "best_adapter": "best"}
+
+
+def adapter_kind(folder_name: str) -> str | None:
+    """``final`` / ``best`` / ``checkpoint`` for saved adapter folders, else None."""
+    if folder_name in ADAPTER_KINDS:
+        return ADAPTER_KINDS[folder_name]
+    return "checkpoint" if folder_name.startswith("checkpoint-") else None
 
 
 class AdapterFolder(ApiModel):
@@ -353,6 +372,7 @@ class AdapterFolder(ApiModel):
     path: str
     checkpoints: int
     has_final: bool
+    has_best: bool = False
     modified: float
     is_project_adapter: bool
 
@@ -367,12 +387,13 @@ def adapter_folders(name: str) -> list[dict]:
             if not folder.is_dir() or folder.is_symlink() or paths.safe_name(folder.name) != folder.name:
                 continue
             saved = [child for child in folder.iterdir() if child.is_dir() and (child / "adapter_config.json").is_file()
-                     and (child.name == "final_adapter" or child.name.startswith("checkpoint-"))]
+                     and adapter_kind(child.name) is not None]
             if not saved:
                 continue
             result.append(dict(name=folder.name, path=str(folder.resolve()),
-                               checkpoints=sum(child.name != "final_adapter" for child in saved),
+                               checkpoints=sum(adapter_kind(child.name) == "checkpoint" for child in saved),
                                has_final=any(child.name == "final_adapter" for child in saved),
+                               has_best=any(child.name == "best_adapter" for child in saved),
                                modified=max(child.stat().st_mtime for child in saved),
                                is_project_adapter=folder.name == project_adapter))
     return result

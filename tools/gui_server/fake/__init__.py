@@ -119,10 +119,15 @@ def _write_adapter(directory: Path, config: dict, step: int = 0) -> None:
     (directory / "adapter_model.safetensors").write_bytes(f"FAKE-SAFETENSORS-{int(step)}".encode("ascii"))
 
 
+FAKE_AUTO_STOP_FILE = "fake_auto_stop.json"  # stands in for trainer_state.pt["auto_stop"]
+
+
 def fake_train_lora(config, callback, stop_event):
     """Stand-in for ``indextts_training.trainer.train_lora`` with real TensorBoard events."""
     from torch.utils.tensorboard import SummaryWriter
-    from indextts_training.schedule import checkpoint_due as due_checkpoint, validation_due, write_adapter_state
+    from indextts_training.auto_stop import monitor_from_config
+    from indextts_training.schedule import (checkpoint_due as due_checkpoint, read_adapter_state, validation_due,
+                                            write_adapter_state)
 
     out = Path(config["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
@@ -134,12 +139,32 @@ def fake_train_lora(config, callback, stop_event):
         raise RuntimeError(f"Early stop step {end_step} must be between 1 and the planned {total} steps.")
     save_every = max(1, int(config.get("save_every", 50)))
     resume = str(config.get("resume") or "")
-    start = int(resume.rsplit("-", 1)[-1]) if resume and resume.rsplit("-", 1)[-1].isdigit() else 0
+    sidecar = read_adapter_state(resume) if resume else None
+    start = sidecar["step"] if sidecar else (
+        int(resume.rsplit("-", 1)[-1]) if resume and resume.rsplit("-", 1)[-1].isdigit() else 0)
     if start >= end_step:
         raise RuntimeError(f"Resume checkpoint is already at step {start}, at or beyond the end step {end_step}.")
     validation = config.get("validation") or None
     interval = int((validation or {}).get("interval_steps") or 0)
     dense = (validation or {}).get("dense")
+    monitor = monitor_from_config(config, (validation or {}).get("fingerprint"))
+    if monitor is not None and not validation:
+        raise RuntimeError("Auto stop needs validation loss. Enable validation for this project first.")
+    if monitor is not None and resume:
+        try:
+            saved = json.loads((Path(resume) / FAKE_AUTO_STOP_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = None
+        if saved and monitor.restore(saved):
+            callback(message=f"Auto stop state restored from step {start}.")
+    overfit = "overfit" in out.name.lower()
+    auto_stopped = False
+
+    def save(directory: Path, saved_step: int, extra: dict | None = None) -> None:
+        _write_adapter(directory, config, saved_step)
+        write_adapter_state(directory, saved_step, total, end_step, stop_event.is_set(), extra)
+        if monitor is not None:
+            (directory / FAKE_AUTO_STOP_FILE).write_text(json.dumps(monitor.to_dict()), encoding="utf-8")
     delay = max(0.02, min(0.25, 40.0 / max(1, end_step - start)))
     fail = "fail" in out.name.lower()
     writer = SummaryWriter(str(out / "tensorboard"))
@@ -176,30 +201,60 @@ def fake_train_lora(config, callback, stop_event):
             callback(step=step, total=end_step, schedule_total=total, epoch=epoch, loss=ema, elapsed=elapsed, eta=eta,
                      message=f"Training step {step}/{end_step}{plan} | epoch {epoch} | lr {lr:.2e}")
             checkpoint_due = due_checkpoint(step, save_every, end_step)
-            if validation and validation_due(step, end_step=end_step, save_every=save_every, interval=interval,
-                                             dense=dense):
+            if validation and (validation_due(step, end_step=end_step, save_every=save_every, interval=interval,
+                                              dense=dense) or (monitor is not None and monitor.extra_validation_due(step))):
                 callback(message=f"Running validation at step {step}…")
-                value = ema * 1.12 + 0.05
+                if overfit:
+                    # A U-shaped curve: improves until 40 % of the plan, then overfits.
+                    value = 0.9 + 2.5 * (progress - 0.4) ** 2 + 0.002 * math.sin(step * 0.9)
+                else:
+                    value = ema * 1.12 + 0.05
                 writer.add_scalar("validation/loss", value, step)
                 callback(message=f"Validation loss at step {step}: {value:.6f}")
+                if monitor is not None:
+                    event = monitor.observe(step, value)
+                    snapshot = monitor.snapshot()
+                    writer.add_scalar("auto_stop/best_loss", snapshot["best_loss"], step)
+                    writer.add_scalar("auto_stop/valley_loss", snapshot["valley_loss"], step)
+                    writer.add_scalar("auto_stop/watching", 0.0 if snapshot["phase"] == "normal" else 1.0, step)
+                    if event["new_best"]:
+                        save(out / "best_adapter", step, {"kind": "best", "validation_loss": float(value)})
+                        callback(message=f"Saved best adapter at step {step} (validation loss {value:.6f}).")
+                    if event["entered_watch"]:
+                        callback(message=f"Auto stop: no significant improvement at step {step}; validating every "
+                                         f"{monitor.watch_interval_steps} steps until step {snapshot['deadline_step']}.")
+                    if event["recovered"]:
+                        callback(message=f"Auto stop: validation loss improved to {value:.6f} at step {step}; "
+                                         f"resuming normal validation.")
+                    if event["stop"]:
+                        auto_stopped = True
+                        checkpoint_due = True
+                    callback(auto_stop=snapshot)
             if checkpoint_due:
                 checkpoint = out / f"checkpoint-step-{step:06d}"
-                _write_adapter(checkpoint, config, step)
-                write_adapter_state(checkpoint, step, total, end_step, False)
+                save(checkpoint, step, {"auto_stopped": True} if auto_stopped else None)
                 eval_name = ""
                 if config.get("eval_enabled") and config.get("eval_text") and config.get("eval_reference"):
                     eval_wav = write_tone(out / "evaluation" / f"eval-step-{step:06d}.wav", 2.0, 200 + step % 200)
                     eval_name = eval_wav.name
                 callback(message=f"Saved checkpoint: {checkpoint.name}" + (f" | Eval: {eval_name}" if eval_name else ""))
             writer.flush()
+            if auto_stopped:
+                break
     finally:
         writer.close()
     final = out / "final_adapter"
     stopped = stop_event.is_set()
-    _write_adapter(final, config, step)
-    write_adapter_state(final, step, total, end_step, stopped)
-    return {"step": step, "total": total, "schedule_total": total, "end_step": end_step, "output": str(final),
-            "stopped": stopped, "early_stopped": not stopped and end_step < total and step == end_step}
+    save(final, step, {"auto_stopped": True} if auto_stopped else None)
+    result = {"step": step, "total": total, "schedule_total": total, "end_step": end_step, "output": str(final),
+              "stopped": stopped, "early_stopped": not stopped and not auto_stopped and end_step < total and step == end_step,
+              "auto_stopped": auto_stopped and not stopped}
+    if monitor is not None:
+        snapshot = monitor.snapshot()
+        result.update(best_step=snapshot["best_step"], best_loss=snapshot["best_loss"], valley_step=snapshot["valley_step"],
+                      watch_start_step=snapshot["watch_start_step"], min_delta=monitor.min_delta,
+                      patience_steps=monitor.patience_steps, auto_stop=snapshot)
+    return result
 
 
 def fake_evaluate_checkpoints(model_dir, targets, rows, *, on_progress=None, on_result=None,

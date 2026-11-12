@@ -12,11 +12,20 @@ from pathlib import Path
 ADAPTER_STATE_FILE = 'adapter_state.json'
 
 
-def write_adapter_state(directory, step, schedule_total, end_step, stopped):
-    """Small sidecar so listings learn the step without loading trainer_state.pt."""
+def write_adapter_state(directory, step, schedule_total, end_step, stopped, extra=None):
+    """Small sidecar so listings learn the step without loading trainer_state.pt.
+
+    ``extra`` adds optional keys such as ``kind``, ``validation_loss`` or
+    ``auto_stopped``.
+    """
     step, schedule_total, end_step = int(step), int(schedule_total), int(end_step)
     data = {'step': step, 'schedule_total': schedule_total, 'end_step': end_step, 'stopped': bool(stopped),
             'early_stopped': bool(not stopped and end_step < schedule_total and step == end_step)}
+    data.update(extra or {})
+    if data.get('auto_stopped'):
+        # An auto stop that lands on the early stop step is reported as an auto stop
+        # (matches the trainer result, where early_stopped excludes auto_stopped).
+        data['early_stopped'] = False
     Path(directory, ADAPTER_STATE_FILE).write_text(json.dumps(data, indent=2), encoding='utf-8')
 
 

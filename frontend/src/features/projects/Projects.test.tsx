@@ -8,14 +8,14 @@ import { bootstrapKey } from '@/app/bootstrap';
 import { applyEvent, useLive } from '@/api/live';
 import { setLanguage } from '@/i18n';
 import { testBootstrap } from '@/features/synthesis/testFixtures';
-import { adapterFolders, checkpointsFixture, posthocFixture, posthocJob, projectFixture, idleTraining, trainingDefaults } from './testFixtures';
+import { adapterFolders, bestCheckpoint, checkpointsFixture, posthocFixture, posthocJob, projectFixture, idleTraining, trainingDefaults } from './testFixtures';
 import ProjectsPage from './ProjectsPage';
 import ProjectLayout from './ProjectLayout';
 import TrainingPage from './TrainingPage';
 import CorpusPage from './CorpusPage';
 import ValidationPage from './ValidationPage';
 import OutputsPage from './OutputsPage';
-import type { Project } from './api';
+import { curveSeries, type Checkpoint, type Project, type TrainingStatus } from './api';
 
 const guard = vi.hoisted(() => ({ allow: true, locked: false, order: [] as string[] }));
 vi.mock('@/features/proofread/ProofreadPanel', () => ({ ProofreadPanel: function MockPanel(props: { project: string; directory: string; role: string; language: string; ref?: Ref<{ prepareContextChange: (commit: () => Promise<unknown>) => Promise<boolean> }>; onContextLockedChange?: (locked: boolean) => void; onUpdated?: () => void }) {
@@ -24,19 +24,19 @@ vi.mock('@/features/proofread/ProofreadPanel', () => ({ ProofreadPanel: function
   useEffect(() => { onContextLockedChange?.(guard.locked); return () => onContextLockedChange?.(false); }, [onContextLockedChange]);
   return <div><div data-testid="proofreader">{JSON.stringify({ project: props.project, directory: props.directory, role: props.role, language: props.language })}</div><button onClick={() => props.onContextLockedChange?.(false)}>Resolve mock edits</button><button onClick={() => { project.dataset_status = { ...project.dataset_status, stale: true, message: 'Training manifest needs updating.' }; props.onUpdated?.(); }}>Mock saved transcript</button></div>;
 } }));
-let client: QueryClient; let project: Project; let metricSeries: { label: string; points: [number, number][]; count: number }[] = [];
+let client: QueryClient; let project: Project; let metricSeries: { label: string; points: [number, number][]; count: number }[] = []; let checkpointOverride: ((adapter: string) => Checkpoint[]) | null = null;
 beforeEach(() => {
   setLanguage('en_US'); localStorage.clear(); project = projectFixture(); guard.allow = true; guard.locked = false; guard.order = [];
   useLive.setState({ ready: true, connection: 'open', jobs: {}, jobOrder: [], training: null, export: null });
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); client.setQueryData(bootstrapKey, testBootstrap());
-  Element.prototype.scrollIntoView = vi.fn(); Element.prototype.hasPointerCapture = vi.fn(() => false); Element.prototype.setPointerCapture = vi.fn(); Element.prototype.releasePointerCapture = vi.fn(); metricSeries = [];
+  Element.prototype.scrollIntoView = vi.fn(); Element.prototype.hasPointerCapture = vi.fn(() => false); Element.prototype.setPointerCapture = vi.fn(); Element.prototype.releasePointerCapture = vi.fn(); metricSeries = []; checkpointOverride = null;
   vi.stubGlobal('ResizeObserver', class { observe = vi.fn(); unobserve = vi.fn(); disconnect = vi.fn(); });
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/training/defaults') return Response.json(trainingDefaults);
     if (url === '/api/training/status') return Response.json(idleTraining);
     if (url === '/api/training/start') return Response.json({ ...idleTraining, running: true, status: 'running', project: 'voice', total: 1000 });
     const adapter = new URL(url, 'http://local').searchParams.get('adapter') ?? 'voice';
-    if (url.includes('/checkpoints')) return Response.json(checkpointsFixture(adapter));
+    if (url.includes('/checkpoints')) return Response.json(checkpointOverride?.(adapter) ?? checkpointsFixture(adapter));
     if (url.includes('/metrics')) return Response.json({ project: 'voice', adapter, logdir: '', available: metricSeries.length > 0, error: '', series: metricSeries });
     if (url.endsWith('/adapters')) return Response.json(adapterFolders);
     if (url.includes('/validation-results')) return Response.json(posthocFixture(adapter));
@@ -197,6 +197,51 @@ describe('post-hoc validation loss', () => {
     const before = requests(url => url.includes('/validation-results')).length;
     act(() => applyEvent('job', { ...posthocJob, state: 'succeeded', progress: 1, finished_at: Date.now() / 1000 }));
     await waitFor(() => expect(requests(url => url.includes('/validation-results')).length).toBeGreaterThan(before)); expect(screen.getByText('Computing validation loss.')).toBeInTheDocument();
+  });
+});
+
+const watching: NonNullable<TrainingStatus['auto_stop']> = { phase: 'watching', best_loss: 1.23456, best_step: 300, valley_loss: 1.23456, valley_step: 300, watch_start_step: 325, deadline_step: 525, improvement: .0012, min_delta: .005, patience_steps: 200, watch_interval_steps: 25 };
+const withBest = (adapter: string) => adapter === 'voice' ? [...checkpointsFixture(adapter).map(item => item.kind === 'final' ? { ...item, early_stopped: false, auto_stopped: true } : item), bestCheckpoint] : checkpointsFixture(adapter);
+describe('auto stop', () => {
+  it('saves the auto stop settings from the training form', async () => {
+    project.validation = { ...project.validation, enabled: true }; project.validation_status = { ...project.validation_status, stale: false }; mount(); await screen.findByText('Training setup');
+    await userEvent.click(screen.getByRole('button', { name: /Auto stop/ })); await userEvent.click(screen.getByRole('switch', { name: 'Stop automatically when validation loss stops improving' }));
+    for (const [name, value] of [['Patience (steps)', '300'], ['Minimum improvement', '0.01'], ['Watch-period validation interval (steps)', '50']] as const) { const input = screen.getByRole('spinbutton', { name }); await userEvent.clear(input); await userEvent.type(input, value); }
+    expect(screen.getByRole('button', { name: 'Save and start training' })).toBeEnabled(); await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(project.training).toMatchObject({ auto_stop_enabled: true, auto_stop_patience_steps: 300, auto_stop_min_delta: .01, auto_stop_watch_interval_steps: 50 }));
+  });
+  it('rejects a watch-period interval longer than the patience', async () => {
+    project.training = { ...project.training, auto_stop_enabled: true, auto_stop_patience_steps: 20, auto_stop_watch_interval_steps: 25 }; mount();
+    expect((await screen.findAllByText('The watch-period validation interval must not exceed the patience (20 steps).')).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Save and start training' })).toBeDisabled();
+  });
+  it('blocks starting without validation but still allows saving', async () => {
+    project.training = { ...project.training, auto_stop_enabled: true }; mount();
+    expect(await screen.findByRole('button', { name: 'Save and start training' })).toBeDisabled(); expect(screen.getAllByText('Auto stop needs validation loss. Enable validation first.')).toHaveLength(2);
+    await userEvent.click(screen.getByRole('button', { name: 'Save settings' })); await waitFor(() => expect(requests((url, init) => url.endsWith('/training') && init?.method === 'PUT')).toHaveLength(1));
+    expect(requests(url => url === '/api/training/start')).toHaveLength(0);
+  });
+  it('shows the watching state with its deadline, then the automatic stop', async () => {
+    useLive.setState({ training: { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 340, total: 1000, auto_stop: watching } }); mount();
+    expect(await screen.findByText('Watching')).toBeInTheDocument(); expect(screen.getAllByText('1.2346')).toHaveLength(2); expect(screen.getAllByText('at step 300')).toHaveLength(2);
+    expect(screen.getByText('0.0012 / 0.0050')).toBeInTheDocument(); expect(screen.getByText('Watching since step 325')).toBeInTheDocument(); expect(screen.getByText('Stops at step 525 unless validation improves by at least 0.0050.')).toBeInTheDocument();
+    act(() => applyEvent('training', { ...idleTraining, status: 'succeeded', project: 'voice', adapter: 'voice', step: 525, total: 1000, auto_stopped: true, message: 'Training stopped automatically at step 525.', auto_stop: { ...watching, phase: 'stopped' } }));
+    expect(await screen.findByText('Stopped automatically')).toBeInTheDocument(); expect(screen.getByText('Training stopped automatically at step 525.')).toBeInTheDocument(); expect(screen.queryByText(/unless validation improves/)).not.toBeInTheDocument(); expect(screen.queryByText('Watching')).not.toBeInTheDocument();
+  });
+  it('keeps auto stop series out of the learning curves', async () => {
+    const labels = ['train/loss', 'train/loss_ema', 'train/lr', 'validation/loss', 'auto_stop/best_loss', 'auto_stop/valley_loss', 'auto_stop/watching'];
+    const pick = (view: string) => curveSeries(labels.map(label => ({ label })), view).map(item => item.label);
+    expect(pick('loss')).toEqual(['train/loss_ema', 'validation/loss']); expect(pick('raw')).toEqual(['train/loss']); expect(pick('lr')).toEqual(['train/lr']);
+    metricSeries = labels.map(label => ({ label, points: [[100, 1]], count: 1 })); useLive.setState({ training: { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 100, total: 1000 } }); mount();
+    await userEvent.click(await screen.findByRole('radio', { name: 'Raw loss' })); expect((await screen.findByRole('img', { name: /train\/loss/ })).getAttribute('aria-label')).not.toContain('auto_stop');
+  });
+  it('lists the best adapter with its validation loss and lets it resume training', async () => {
+    checkpointOverride = withBest; const router = mount('/projects/voice/outputs'); const row = (await screen.findByText('best_adapter')).closest('tr')!;
+    expect(within(row).getByText('Best adapter')).toBeInTheDocument(); expect(within(row).getByText('1.0432')).toBeInTheDocument(); expect(within(rowOf('final_adapter')).getByText('Auto stopped')).toBeInTheDocument();
+    expect(within(row).getByRole('link', { name: 'Synthesize' })).toHaveAttribute('href', '/synthesis?adapter=D%3A%2Fout%2Fvoice%2Fbest_adapter'); expect(within(row).getByRole('link', { name: 'Export' })).toBeInTheDocument();
+    await userEvent.click(within(row).getByRole('link', { name: 'Resume training' })); await waitFor(() => expect(router.state.location.search).toContain('best_adapter'));
+    const resume = await screen.findByRole('combobox', { name: 'Resume checkpoint' }); expect(resume).toHaveTextContent('best_adapter'); await userEvent.click(resume);
+    expect(await screen.findByRole('option', { name: 'best_adapter' })).toHaveTextContent('Best adapter · step 150 · validation loss 1.0432'); expect(screen.getByRole('option', { name: 'checkpoint-step-000200' })).toBeInTheDocument(); expect(screen.queryByRole('option', { name: 'final_adapter' })).not.toBeInTheDocument();
   });
 });
 

@@ -744,5 +744,14 @@
   "Select at least one checkpoint or the base model.": "请至少选择一个检查点或原始模型。",
   "The selected items already have current results. Turn on Recompute to run them again.": "所选项目已有最新结果。如需再次计算，请开启“重新计算”。",
   "Validation {0}: sample {1}/{2}": "验证 {0}：样本 {1}/{2}",
-  "Computing validation loss.": "正在计算验证损失。"
+  "Computing validation loss.": "正在计算验证损失。",
+  "Training stopped automatically at step {0}: no validation improvement of at least {1} within {2} steps. Best validation loss {3:.6f} at step {4}.": "训练已在第 {0} 步自动终止：在 {2} 步内验证损失没有至少 {1} 的改善。最优验证损失 {3:.6f}，出现在第 {4} 步。",
+  "Auto stop state restored from step {0}.": "已从第 {0} 步恢复自动终止状态。",
+  "Auto stop state was not restored: the validation set changed. Starting a new comparison.": "验证集已变化，未恢复自动终止状态，将重新开始比较。",
+  "Saved best adapter at step {0} (validation loss {1:.6f}).": "已在第 {0} 步保存最优适配器（验证损失 {1:.6f}）。",
+  "Auto stop: no significant improvement at step {0}; validating every {1} steps until step {2}.": "自动终止：第 {0} 步没有显著改善，进入观察期，每 {1} 步验证一次，直到第 {2} 步。",
+  "Auto stop: validation loss improved to {0:.6f} at step {1}; resuming normal validation.": "自动终止：第 {1} 步验证损失改善到 {0:.6f}，恢复正常验证。",
+  "Auto stop needs validation loss. Enable validation for this project first.": "自动终止依赖验证损失，请先为本项目启用验证。",
+  "The watch validation interval must not exceed the patience steps.": "观察期验证间隔不能大于耐心步数。",
+  "{0} · best": "{0} · 最优适配器"
 }

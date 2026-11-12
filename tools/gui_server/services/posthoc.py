@@ -41,7 +41,7 @@ class ValidationRunRequest(ApiModel):
 
 class PosthocItem(ApiModel):
     name: str
-    kind: Literal["baseline", "final", "checkpoint"]
+    kind: Literal["baseline", "final", "best", "checkpoint"]
     step: int | None = None
     loss: float
     validation_fingerprint: str
@@ -146,7 +146,7 @@ def _status(entry: dict, root: Path, fingerprint: str | None) -> str:
 def _items(root: Path, fingerprint: str | None) -> list[dict]:
     result = []
     for entry in _load(root):
-        kind = "baseline" if entry["name"] == BASELINE else "final" if entry["name"] == "final_adapter" else "checkpoint"
+        kind = "baseline" if entry["name"] == BASELINE else projects.adapter_kind(entry["name"]) or "checkpoint"
         result.append(dict(name=entry["name"], kind=kind, step=entry.get("step"), loss=float(entry["loss"]),
                            validation_fingerprint=entry.get("validation_fingerprint", ""),
                            samples=int(entry.get("samples", 0)), computed_at=float(entry.get("computed_at", 0)),
@@ -155,12 +155,12 @@ def _items(root: Path, fingerprint: str | None) -> list[dict]:
 
 
 def _points(items: list[dict]) -> list[tuple[int, float]]:
-    """Current results by step; a checkpoint wins over a final adapter at the same step."""
+    """Current results by step; a checkpoint wins over a final/best adapter at the same step."""
     by_step: dict[int, tuple[int, float]] = {}
     for item in items:
         if item["status"] != "current" or item["step"] is None:
             continue
-        rank = 0 if item["kind"] == "final" else 1
+        rank = 0 if item["kind"] in ("final", "best") else 1
         step = int(item["step"])
         if step not in by_step or rank >= by_step[step][0]:
             by_step[step] = (rank, item["loss"])
@@ -287,7 +287,7 @@ def start(name: str, request: ValidationRunRequest):
     if request.include_baseline and (request.recompute or BASELINE not in current_names):
         targets.append(dict(name=BASELINE, path=None, step=0, kind="baseline"))
     checkpoints = [available[item] for item in selected if request.recompute or item not in current_names]
-    checkpoints.sort(key=lambda item: (item["kind"] == "final", item["step"] is None, item["step"] or 0))
+    checkpoints.sort(key=lambda item: (item["kind"] != "checkpoint", item["step"] is None, item["step"] or 0))
     targets += [dict(name=item["name"], path=item["path"], step=item["step"], kind=item["kind"]) for item in checkpoints]
     if not targets:
         raise ServiceError("The selected items already have current results. Turn on Recompute to run them again.")
@@ -310,7 +310,7 @@ def start(name: str, request: ValidationRunRequest):
         work = []
         copies = []
         for target in targets:
-            if target["kind"] == "final":
+            if target["kind"] in ("final", "best"):
                 folder = Path(target["path"])
                 digest = _sha256(folder)
                 twin = next((item for item in available.values() if item["kind"] == "checkpoint" and digest

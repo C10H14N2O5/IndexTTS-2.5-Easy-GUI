@@ -120,6 +120,9 @@ def training(tmp_path, monkeypatch):
     }
     samples = []
     backward = Mock()
+    # Optional per-step validation loss: every validation row returns this value.
+    validation_losses = {}
+    validation_step = {}
 
     def prepare(_tts, item, device, include_auxiliary_conditioning):
         assert device == 'cuda:0'
@@ -135,18 +138,29 @@ def training(tmp_path, monkeypatch):
         samples.append((item['audio'], optimizer.step.call_count))
         if item.get('stop'):
             stop.set()
-        value = Loss(item['loss'], backward)
+        value = item['loss']
+        if item['audio'] != 'training.wav':
+            value = validation_losses.get(validation_step.get('step'), value)
+        value = Loss(value, backward)
         return value, value, None, None, None
 
     trainer._freeze_index_tts_modules = Mock(return_value=[])
     trainer._prepare_sample = prepare
     trainer._loss = loss
     trainer._generate_eval = Mock(return_value=None)
+    validation_loss = trainer._validation_loss
+
+    def tracked_validation_loss(_tts, _rows, _device, step, *args, **kwargs):
+        validation_step['step'] = step  # global step, also after a resume
+        return validation_loss(_tts, _rows, _device, step, *args, **kwargs)
+
+    trainer._validation_loss = tracked_validation_loss
     callback = Mock()
     return SimpleNamespace(
         trainer=trainer, config=config, out=out, writer=writer, writer_factory=writer_factory,
         optimizer=optimizer, scheduler=scheduler, adapter=adapter, flags=flags, samples=samples,
         backward=backward, stop=stop, tts=tts, callback=callback, lr_lambdas=lr_lambdas,
+        validation_losses=validation_losses,
         run=lambda: trainer.train_lora(config, callback, stop),
     )
 
@@ -452,3 +466,223 @@ def test_validation_loss_reports_each_sample(training):
     assert loss == 3.0
     assert seen == [(0, 2), (1, 2)]
     assert training.adapter.training is False  # restored to the pre-call mode
+
+
+# ---------------------------------------------------------------- auto stop
+
+U_SHAPE = {4: 3.0, 8: 2.5, 12: 2.45, 14: 2.6, 15: 2.7}
+
+
+def enable_auto_stop(training, patience=3, min_delta=0.1, interval=2, losses=None, **config):
+    training.config.update(steps=20, save_every=4, **config)
+    training.config['auto_stop'] = {'patience_steps': patience, 'min_delta': min_delta,
+                                    'watch_interval_steps': interval}
+    training.validation_losses.update(U_SHAPE if losses is None else losses)
+
+
+def saved_paths(training):
+    return [Path(entry.args[0]).name for entry in training.adapter.save_pretrained.call_args_list]
+
+
+def trainer_state(path):
+    return json.loads((path / 'trainer_state.pt').read_text(encoding='utf-8'))
+
+
+def scalar_points(writer, name):
+    return [(step, value) for tag, value, step in
+            (record.args for record in writer.add_scalar.call_args_list) if tag == name]
+
+
+def messages(training):
+    return [entry.kwargs['message'] for entry in training.callback.call_args_list if 'message' in entry.kwargs]
+
+
+def auto_stop_snapshots(training):
+    return [entry.kwargs['auto_stop'] for entry in training.callback.call_args_list if 'auto_stop' in entry.kwargs]
+
+
+def test_auto_stop_ends_u_shaped_run_and_keeps_best_adapter(training):
+    enable_auto_stop(training)
+    result = training.run()
+    # Normal validations at 4/8/12; the watch starting at 12 adds 14 and the deadline 15.
+    assert validation_points(training.writer) == [(4, 3.0), (8, 2.5), (12, 2.45), (14, 2.6), (15, 2.7)]
+    assert training.optimizer.step.call_count == 15
+    assert scalar_points(training.writer, 'auto_stop/watching') == [(4, 0.0), (8, 0.0), (12, 1.0), (14, 1.0), (15, 1.0)]
+    assert scalar_points(training.writer, 'auto_stop/best_loss') == [(4, 3.0), (8, 2.5), (12, 2.45), (14, 2.45), (15, 2.45)]
+    assert scalar_points(training.writer, 'auto_stop/valley_loss') == [(4, 3.0), (8, 2.5), (12, 2.5), (14, 2.5), (15, 2.5)]
+    # The best adapter is saved at every new best, before that step's checkpoint.
+    assert saved_paths(training) == [
+        'best_adapter', 'checkpoint-step-000004', 'best_adapter', 'checkpoint-step-000008',
+        'best_adapter', 'checkpoint-step-000012', 'checkpoint-step-000015', 'final_adapter']
+    best = training.out / 'best_adapter'
+    assert adapter_state(best) == {'step': 12, 'schedule_total': 20, 'end_step': 20, 'stopped': False,
+                                   'early_stopped': False, 'kind': 'best', 'validation_loss': 2.45}
+    assert trainer_state(best)['step'] == 12
+    # Forced off-grid checkpoint and evaluation at the stop step.
+    assert sorted(path.name for path in training.out.glob('checkpoint-step-*')) == [
+        'checkpoint-step-000004', 'checkpoint-step-000008', 'checkpoint-step-000012', 'checkpoint-step-000015']
+    assert [entry.args[2] for entry in training.trainer._generate_eval.call_args_list] == [4, 8, 12, 15]
+    for name in ['checkpoint-step-000015', 'final_adapter']:
+        assert adapter_state(training.out / name) == {'step': 15, 'schedule_total': 20, 'end_step': 20,
+                                                      'stopped': False, 'early_stopped': False, 'auto_stopped': True}
+        assert trainer_state(training.out / name)['auto_stop']['phase'] == 'stopped'
+    assert 'auto_stopped' not in adapter_state(training.out / 'checkpoint-step-000012')
+    assert result['step'] == 15 and result['total'] == result['schedule_total'] == result['end_step'] == 20
+    assert result['auto_stopped'] and not result['early_stopped'] and not result['stopped']
+    assert (result['best_step'], result['best_loss'], result['valley_step'], result['watch_start_step']) == (12, 2.45, 8, 12)
+    assert (result['min_delta'], result['patience_steps']) == (0.1, 3)
+    assert result['auto_stop']['phase'] == 'stopped' and result['auto_stop']['deadline_step'] == 15
+    assert result['output'] == str(training.out / 'final_adapter')
+    text = messages(training)
+    assert 'Saved best adapter at step 12 (validation loss 2.450000).' in text
+    assert 'Auto stop: no significant improvement at step 12; validating every 2 steps until step 15.' in text
+    snapshots = auto_stop_snapshots(training)
+    assert [item['phase'] for item in snapshots] == ['normal', 'normal', 'watching', 'watching', 'stopped']
+    assert snapshots[2]['deadline_step'] == 15
+    assert training.adapter.training and training.flags.grad
+
+
+def test_auto_stop_state_is_saved_after_the_steps_validation(training):
+    enable_auto_stop(training)
+    training.run()
+    state = trainer_state(training.out / 'checkpoint-step-000012')['auto_stop']
+    assert state == {'version': 1, 'fingerprint': 'a' * 64, 'phase': 'watching', 'best_loss': 2.45, 'best_step': 12,
+                     'valley_loss': 2.5, 'valley_step': 8, 'watch_start_step': 12, 'watch_best_loss': 2.45}
+    assert trainer_state(training.out / 'checkpoint-step-000004')['auto_stop']['valley_step'] == 4
+
+
+def test_auto_stop_recovery_continues_to_planned_end(training):
+    enable_auto_stop(training, patience=6, losses={4: 3.0, 8: 2.95, 10: 2.99, 12: 2.8, 16: 2.6, 20: 2.4})
+    result = training.run()
+    # Watch 8..14 adds step 10; the recovery at 12 cancels the extra validation at 14.
+    assert [step for step, _ in validation_points(training.writer)] == [4, 8, 10, 12, 16, 20]
+    assert sorted(path.name for path in training.out.glob('checkpoint-step-*')) == [
+        f'checkpoint-step-{step:06d}' for step in (4, 8, 12, 16, 20)]
+    assert result['step'] == 20 and not result['auto_stopped'] and not result['early_stopped']
+    assert (result['best_step'], result['valley_step'], result['watch_start_step']) == (20, 20, None)
+    assert result['auto_stop']['phase'] == 'normal'
+    assert 'Auto stop: validation loss improved to 2.800000 at step 12; resuming normal validation.' in messages(training)
+    assert 'auto_stopped' not in adapter_state(training.out / 'final_adapter')
+    assert adapter_state(training.out / 'best_adapter')['step'] == 20
+
+
+def test_auto_stop_requires_validation_rows(training):
+    training.config.pop('validation')
+    training.config['auto_stop'] = {'patience_steps': 3, 'min_delta': 0.1, 'watch_interval_steps': 2}
+    with pytest.raises(RuntimeError, match='Auto stop needs validation loss'):
+        training.run()
+    training.optimizer.step.assert_not_called()
+    training.writer_factory.assert_not_called()
+
+
+def test_disabled_auto_stop_keeps_result_shape(training):
+    result = training.run()
+    assert result['auto_stopped'] is False
+    assert 'best_step' not in result and 'auto_stop' not in result
+    assert trainer_state(training.out / 'final_adapter')['auto_stop'] is None
+    assert not (training.out / 'best_adapter').exists()
+    assert auto_stop_snapshots(training) == []
+    assert scalar_points(training.writer, 'auto_stop/watching') == []
+
+
+def resume_with_auto_stop(tmp_path, step, monitor_state):
+    resume = make_resume(tmp_path, step)
+    state = json.loads((resume / 'trainer_state.pt').read_text(encoding='utf-8'))
+    state['auto_stop'] = monitor_state
+    (resume / 'trainer_state.pt').write_text(json.dumps(state), encoding='utf-8')
+    return resume
+
+
+def watching_state(fingerprint):
+    from indextts_training.auto_stop import AutoStopMonitor
+    monitor = AutoStopMonitor(3, 0.1, 2, fingerprint)
+    monitor.observe(4, 3.0)
+    monitor.observe(8, 2.5)
+    monitor.observe(12, 2.45)
+    assert monitor.phase == 'watching'
+    return monitor.to_dict()
+
+
+def test_resume_restores_auto_stop_watch(training, tmp_path):
+    enable_auto_stop(training, resume=str(resume_with_auto_stop(tmp_path, 12, watching_state('a' * 64))))
+    result = training.run()
+    assert 'Auto stop state restored from step 12.' in messages(training)
+    # The restored watch still validates at 14 and stops at its deadline 15.
+    assert validation_points(training.writer) == [(14, 2.6), (15, 2.7)]
+    assert result['auto_stopped'] and result['step'] == 15
+    assert (result['best_step'], result['valley_step'], result['watch_start_step']) == (12, 8, 12)
+    assert training.optimizer.step.call_count == 3
+    assert not (training.out / 'best_adapter').exists()  # no new best in this run
+
+
+def test_resume_with_changed_validation_set_starts_fresh(training, tmp_path):
+    enable_auto_stop(training, losses={16: 2.6, 20: 2.7},
+                     resume=str(resume_with_auto_stop(tmp_path, 12, watching_state('b' * 64))))
+    result = training.run()
+    assert ('Auto stop state was not restored: the validation set changed. Starting a new comparison.'
+            in messages(training))
+    assert validation_points(training.writer) == [(16, 2.6), (20, 2.7)]
+    assert result['step'] == 20 and not result['auto_stopped']
+    assert (result['best_step'], result['valley_step'], result['watch_start_step']) == (16, 16, 20)
+
+
+def test_resume_from_checkpoint_without_auto_stop_state(training, tmp_path):
+    enable_auto_stop(training, losses={16: 2.6, 20: 2.5}, resume=str(make_resume(tmp_path, 12)))
+    result = training.run()
+    assert not any('Auto stop state' in text for text in messages(training))
+    assert result['best_step'] == 20 and not result['auto_stopped']
+
+
+def test_resume_from_auto_stopped_checkpoint_continues(training, tmp_path):
+    from indextts_training.auto_stop import AutoStopMonitor
+    monitor = AutoStopMonitor(3, 0.1, 2, 'a' * 64)
+    monitor.restore(watching_state('a' * 64))
+    monitor.observe(15, 2.7)
+    assert monitor.phase == 'stopped'
+    enable_auto_stop(training, losses={16: 2.3, 20: 2.1},
+                     resume=str(resume_with_auto_stop(tmp_path, 15, monitor.to_dict())))
+    result = training.run()
+    assert 'Auto stop state restored from step 15.' in messages(training)
+    assert [step for step, _ in validation_points(training.writer)] == [16, 20]
+    assert result['step'] == 20 and not result['auto_stopped']
+    assert (result['best_step'], result['valley_step']) == (20, 20)
+
+
+@pytest.mark.parametrize(('end_step', 'final_step', 'auto', 'early'), [
+    (13, 13, False, True),   # fixed early stop first (still watching at 13)
+    (18, 15, True, False),   # auto stop first
+    (15, 15, True, False),   # both at once: reported as an auto stop
+])
+def test_auto_stop_combined_with_fixed_early_stop(training, end_step, final_step, auto, early):
+    enable_auto_stop(training, end_step=end_step)
+    result = training.run()
+    assert (result['step'], result['auto_stopped'], result['early_stopped']) == (final_step, auto, early)
+    assert result['schedule_total'] == 20 and result['end_step'] == end_step
+    final = adapter_state(training.out / 'final_adapter')
+    assert final['step'] == final_step
+    assert final.get('auto_stopped', False) is auto
+    assert final['early_stopped'] is early
+    assert adapter_state(training.out / f'checkpoint-step-{final_step:06d}')['early_stopped'] is early
+    assert result['auto_stop']['phase'] == ('stopped' if auto else 'watching')
+
+
+def test_auto_stop_validation_failure_saves_checkpoint_without_observation(training):
+    enable_auto_stop(training, losses={})
+    training.config['validation']['rows'][1]['broken'] = True
+    with pytest.raises(RuntimeError, match='Validation failed at step 4'):
+        training.run()
+    state = trainer_state(training.out / 'checkpoint-step-000004')
+    assert state['step'] == 4 and state['auto_stop']['best_step'] is None
+    assert not (training.out / 'best_adapter').exists()
+    training.trainer._generate_eval.assert_not_called()
+
+
+def test_stop_during_validation_does_not_observe(training):
+    enable_auto_stop(training)
+    training.config['validation']['interval_steps'] = 1
+    training.config['validation']['rows'][0]['stop'] = True
+    result = training.run()
+    assert result['stopped'] and not result['auto_stopped'] and result['step'] == 1
+    assert result['auto_stop']['best_step'] is None
+    assert not (training.out / 'best_adapter').exists()
+    assert auto_stop_snapshots(training) == []

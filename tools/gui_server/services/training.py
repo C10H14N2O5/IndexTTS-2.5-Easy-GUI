@@ -14,6 +14,20 @@ from ..state import current
 from . import engine, projects
 
 
+class AutoStopStatus(OpenModel):
+    phase: Literal["normal", "watching", "stopped"] = "normal"
+    best_loss: float | None = None
+    best_step: int | None = None
+    valley_loss: float | None = None
+    valley_step: int | None = None
+    watch_start_step: int | None = None
+    deadline_step: int | None = None
+    improvement: float = 0
+    min_delta: float = 0
+    patience_steps: int = 0
+    watch_interval_steps: int = 0
+
+
 class TrainingSnapshot(OpenModel):
     running: bool = False
     failed: bool = False
@@ -22,6 +36,8 @@ class TrainingSnapshot(OpenModel):
     step: int = 0
     total: int = 0
     schedule_total: int = 0
+    auto_stop: AutoStopStatus | None = None
+    auto_stopped: bool = False
     epoch: float = 0
     loss: float | None = None
     elapsed: float = 0
@@ -99,6 +115,15 @@ def start(name: str, overrides: dict | None = None) -> dict:
             if resumed is not None and resumed >= end_step:
                 raise ServiceError("The resume checkpoint is already at step {0}; choose an early stop step after it.",
                                    resumed)
+        auto_stop = None
+        if values["auto_stop_enabled"]:
+            if not dataset.validation_settings(meta).get("enabled"):
+                raise ServiceError("Auto stop needs validation loss. Enable validation for this project first.")
+            if values["auto_stop_watch_interval_steps"] > values["auto_stop_patience_steps"]:
+                raise ServiceError("The watch validation interval must not exceed the patience steps.")
+            auto_stop = dict(patience_steps=values["auto_stop_patience_steps"],
+                             min_delta=values["auto_stop_min_delta"],
+                             watch_interval_steps=values["auto_stop_watch_interval_steps"])
         cfg = dict(manifest=manifest, model_dir=str(state.extras.get("model_dir", paths.MODEL_DIR)),
                    output_dir=str(output), mode=values["mode"], steps=values["training_steps"],
                    epochs=values["training_epochs"], save_every=values["save_steps"] if values["mode"] == "Steps"
@@ -110,6 +135,7 @@ def start(name: str, overrides: dict | None = None) -> dict:
                    eval_text=values["eval_text"].strip(), eval_reference=values["eval_reference"],
                    eval_reference_transcript=values["eval_reference_transcript"].strip(),
                    eval_language=projects.language_code(values["eval_language"]), end_step=end_step,
+                   auto_stop=auto_stop,
                    **projects._DISABLED_AUXILIARY)
         cfg.update(differentiable_asr_model="large-v3", asr_cfm_steps=4, asr_cfm_temperature=1.0)
         state.training.start(cfg)

@@ -10,14 +10,15 @@ def list_adapters() -> list[dict]:
     for project in sorted(paths.TRAINING_OUTPUTS_DIR.iterdir()):
         if not project.is_dir() or project.is_symlink():
             continue
-        final = project / 'final_adapter'
-        candidates = ([final] if final.is_dir() else []) + sorted(project.glob('checkpoint-*'))
+        named = [project / 'final_adapter', project / 'best_adapter']
+        candidates = [path for path in named if path.is_dir()] + sorted(project.glob('checkpoint-*'))
         for path in candidates:
             if path.is_symlink() or not (path / 'adapter_config.json').is_file():
                 continue
-            is_final = path.name == 'final_adapter'
-            label = t('{0} · final', project.name) if is_final else f'{project.name} · {path.name}'
+            kind = {'final_adapter': 'final', 'best_adapter': 'best'}.get(path.name, 'checkpoint')
+            label = (t('{0} · final', project.name) if kind == 'final' else
+                     t('{0} · best', project.name) if kind == 'best' else f'{project.name} · {path.name}')
             result.append({'label': label,
                            'path': str(path), 'project': project.name, 'checkpoint': path.name,
-                           'kind': 'final' if is_final else 'checkpoint'})
+                           'kind': kind})
     return result

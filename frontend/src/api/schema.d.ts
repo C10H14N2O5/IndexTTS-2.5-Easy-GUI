@@ -1095,6 +1095,11 @@ export interface components {
             checkpoints: number;
             /** Has Final */
             has_final: boolean;
+            /**
+             * Has Best
+             * @default false
+             */
+            has_best: boolean;
             /** Modified */
             modified: number;
             /** Is Project Adapter */
@@ -1208,6 +1213,49 @@ export interface components {
             /** Duration */
             duration: number | null;
         };
+        /** AutoStopStatus */
+        AutoStopStatus: {
+            /**
+             * Phase
+             * @default normal
+             * @enum {string}
+             */
+            phase: "normal" | "watching" | "stopped";
+            /** Best Loss */
+            best_loss?: number | null;
+            /** Best Step */
+            best_step?: number | null;
+            /** Valley Loss */
+            valley_loss?: number | null;
+            /** Valley Step */
+            valley_step?: number | null;
+            /** Watch Start Step */
+            watch_start_step?: number | null;
+            /** Deadline Step */
+            deadline_step?: number | null;
+            /**
+             * Improvement
+             * @default 0
+             */
+            improvement: number;
+            /**
+             * Min Delta
+             * @default 0
+             */
+            min_delta: number;
+            /**
+             * Patience Steps
+             * @default 0
+             */
+            patience_steps: number;
+            /**
+             * Watch Interval Steps
+             * @default 0
+             */
+            watch_interval_steps: number;
+        } & {
+            [key: string]: unknown;
+        };
         /** AutotuneRequest */
         AutotuneRequest: {
             /**
@@ -1307,7 +1355,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "final" | "checkpoint";
+            kind: "final" | "best" | "checkpoint";
             /** Step */
             step?: number | null;
             /** Modified */
@@ -1324,6 +1372,13 @@ export interface components {
              * @default false
              */
             early_stopped: boolean;
+            /**
+             * Auto Stopped
+             * @default false
+             */
+            auto_stopped: boolean;
+            /** Validation Loss */
+            validation_loss?: number | null;
         };
         /** ConsoleLine */
         ConsoleLine: {
@@ -1872,7 +1927,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "baseline" | "final" | "checkpoint";
+            kind: "baseline" | "final" | "best" | "checkpoint";
             /** Step */
             step?: number | null;
             /** Loss */
@@ -2354,6 +2409,26 @@ export interface components {
              */
             early_stop_step: number;
             /**
+             * Auto Stop Enabled
+             * @default false
+             */
+            auto_stop_enabled: boolean;
+            /**
+             * Auto Stop Patience Steps
+             * @default 200
+             */
+            auto_stop_patience_steps: number;
+            /**
+             * Auto Stop Min Delta
+             * @default 0.005
+             */
+            auto_stop_min_delta: number;
+            /**
+             * Auto Stop Watch Interval Steps
+             * @default 25
+             */
+            auto_stop_watch_interval_steps: number;
+            /**
              * Lora Rank
              * @default 16
              * @enum {integer}
@@ -2523,6 +2598,12 @@ export interface components {
              * @default 0
              */
             schedule_total: number;
+            auto_stop?: components["schemas"]["AutoStopStatus"] | null;
+            /**
+             * Auto Stopped
+             * @default false
+             */
+            auto_stopped: boolean;
             /**
              * Epoch
              * @default 0

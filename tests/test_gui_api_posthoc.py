@@ -221,6 +221,48 @@ class PosthocApiTests(GuiApiTestCase):
         self.assertEqual(self.calls, [[(CKPT6, 6), ("final_adapter", 6)]])
         self.assertIsNone(self.items()["final_adapter"]["same_as"])
 
+    def test_best_adapter_reuses_identical_checkpoint_and_evaluates_when_distinct(self):
+        status = self.train(training={"auto_stop_enabled": True})
+        self.assertFalse(status["auto_stopped"])
+        listing = {item["name"]: item for item in self.client.get("/api/projects/post/checkpoints").json()}
+        best = listing["best_adapter"]
+        step = best["step"]
+        self.assertEqual((best["kind"], step), ("best", status["auto_stop"]["best_step"]))
+        twin = f"checkpoint-step-{step:06d}"
+        self.assertEqual((self.out / "best_adapter/adapter_model.safetensors").read_bytes(),
+                         (self.out / twin / "adapter_model.safetensors").read_bytes())
+        _, final = self.run_job(checkpoints=["best_adapter", twin])
+        self.assertEqual(self.calls, [[(twin, step)]])
+        self.assertEqual(sorted(final["result"]["computed"]), sorted([twin, "best_adapter"]))
+        items = self.items()
+        self.assertEqual((items["best_adapter"]["kind"], items["best_adapter"]["step"],
+                          items["best_adapter"]["same_as"], items["best_adapter"]["status"]), ("best", step, twin, "current"))
+        self.assertEqual(items["best_adapter"]["loss"], items[twin]["loss"])
+        # One point per step: the checkpoint wins over the identical best adapter.
+        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [step])
+        # Best adapter alone with Recompute still reuses the current twin.
+        self.calls.clear()
+        _, final = self.run_job(checkpoints=["best_adapter"], recompute=True)
+        self.assertEqual((self.calls, final["result"]["computed"]), ([], ["best_adapter"]))
+        # Distinct weights are evaluated directly at the sidecar step.
+        (self.out / "best_adapter/adapter_model.safetensors").write_bytes(b"DIFFERENT BEST")
+        self.assertEqual(self.items()["best_adapter"]["status"], "outdated")
+        _, final = self.run_job(checkpoints=["best_adapter"])
+        self.assertEqual(self.calls, [[("best_adapter", step)]])
+        item = self.items()["best_adapter"]
+        self.assertEqual((item["kind"], item["step"], item["same_as"], item["status"]), ("best", step, None, "current"))
+        self.assertAlmostEqual(item["loss"], fake_loss(step))
+
+    def test_best_adapter_without_twin_is_evaluated(self):
+        self.train(training={"auto_stop_enabled": True})
+        step = self.client.get("/api/projects/post/checkpoints").json()
+        step = next(item["step"] for item in step if item["name"] == "best_adapter")
+        shutil.rmtree(self.out / f"checkpoint-step-{step:06d}")
+        job, _ = self.run_job(checkpoints=["best_adapter"], include_baseline=True)
+        self.assertEqual(job["meta"]["targets"], ["base_model", "best_adapter"])
+        self.assertEqual(self.calls, [[("base_model", 0), ("best_adapter", step)]])
+        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [0, step])
+
     def test_rebuilt_validation_manifest_marks_results_outdated(self):
         self.train()
         self.run_job(checkpoints=[CKPT2, CKPT4], include_baseline=True)

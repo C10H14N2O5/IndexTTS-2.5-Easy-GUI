@@ -111,6 +111,20 @@ class AdapterStateTests(unittest.TestCase):
         self.assertEqual(state, {'step': 7, 'schedule_total': 10, 'end_step': 7, 'stopped': False,
                                  'early_stopped': True})
 
+    def test_extra_keys_are_merged(self):
+        write_adapter_state(self.directory, 12, 100, 100, False, {'kind': 'best', 'validation_loss': 1.25})
+        self.assertEqual(read_adapter_state(self.directory), {
+            'step': 12, 'schedule_total': 100, 'end_step': 100, 'stopped': False, 'early_stopped': False,
+            'kind': 'best', 'validation_loss': 1.25})
+        write_adapter_state(self.directory, 12, 100, 100, False, None)
+        self.assertNotIn('kind', read_adapter_state(self.directory))
+
+    def test_auto_stop_at_the_early_stop_step_is_not_an_early_stop(self):
+        write_adapter_state(self.directory, 30, 100, 30, False, {'auto_stopped': True})
+        self.assertEqual(read_adapter_state(self.directory), {
+            'step': 30, 'schedule_total': 100, 'end_step': 30, 'stopped': False, 'early_stopped': False,
+            'auto_stopped': True})
+
     def test_missing_or_malformed_sidecar(self):
         self.assertIsNone(read_adapter_state(self.directory))
         self.assertIsNone(read_adapter_state(self.directory / 'missing'))

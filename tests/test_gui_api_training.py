@@ -162,6 +162,100 @@ class TrainingApiTests(GuiApiTestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("same audio", response.json()["error"]["message"])
 
+    # ---------------------------------------------------------------- auto stop
+    def enable_validation(self, name="trainer"):
+        from tools.gui_server import paths
+        folder = paths.VALIDATION_DIR / name
+        response = self.client.put(f"/api/projects/{name}/validation", json={"source_folder": str(folder)})
+        self.assertEqual(response.status_code, 200, response.text)
+        clip = self.audio(f"validation/{name}/v1.wav", .9)
+        clip.with_suffix(".txt").write_text("validation text v1", encoding="utf-8")
+        response = self.client.put(f"/api/projects/{name}/validation", json={"prepare": True, "enabled": True})
+        self.assertEqual(response.status_code, 200, response.text)
+
+    AUTO_STOP = dict(adapter_name="overfit_run", training_steps=20, save_steps=2, auto_stop_enabled=True,
+                     auto_stop_patience_steps=3, auto_stop_min_delta=0.01, auto_stop_watch_interval_steps=3)
+
+    def test_auto_stop_ends_overfitting_run_and_keeps_best_adapter(self):
+        name = self.prepare(**self.AUTO_STOP)
+        self.enable_validation(name)
+        project = self.client.get(f"/api/projects/{name}").json()["training"]
+        self.assertEqual((project["auto_stop_enabled"], project["auto_stop_patience_steps"],
+                          project["auto_stop_min_delta"], project["auto_stop_watch_interval_steps"]), (True, 3, 0.01, 3))
+        self.assertEqual(self.client.post("/api/training/start", json={"project": name}).status_code, 202)
+        terminal = self.finish()
+        # The fake U-shaped curve bottoms out at step 8 (40 % of 20); the watch starting at
+        # step 10 ends at its deadline 13, before the planned 20 steps.
+        self.assertEqual(terminal["status"], "succeeded", terminal)
+        self.assertEqual((terminal["step"], terminal["auto_stopped"]), (13, True))
+        self.assertEqual(terminal["auto_stop"]["phase"], "stopped")
+        self.assertEqual((terminal["auto_stop"]["best_step"], terminal["auto_stop"]["valley_step"],
+                          terminal["auto_stop"]["watch_start_step"], terminal["auto_stop"]["deadline_step"]), (8, 8, 10, 13))
+        self.assertIn("stopped automatically at step 13", terminal["message"])
+        self.assertIn("within 3 steps", terminal["message"])
+        self.assertIn("at step 8", terminal["message"])
+        persisted = json.loads((self.root / "training/outputs/overfit_run/training_config.json").read_text())
+        self.assertEqual(persisted["auto_stop"], {"patience_steps": 3, "min_delta": 0.01, "watch_interval_steps": 3})
+        checkpoints = {row["name"]: row for row in self.client.get(f"/api/projects/{name}/checkpoints").json()}
+        self.assertEqual(set(checkpoints), {f"checkpoint-step-{step:06d}" for step in (2, 4, 6, 8, 10, 12, 13)}
+                         | {"best_adapter", "final_adapter"})
+        best = checkpoints["best_adapter"]
+        self.assertEqual((best["kind"], best["step"], best["auto_stopped"], best["evaluation"]), ("best", 8, False, None))
+        self.assertAlmostEqual(best["validation_loss"], terminal["auto_stop"]["best_loss"])
+        self.assertTrue(checkpoints["checkpoint-step-000013"]["auto_stopped"])
+        self.assertFalse(checkpoints["checkpoint-step-000012"]["auto_stopped"])
+        self.assertIsNone(checkpoints["checkpoint-step-000012"]["validation_loss"])
+        self.assertEqual((checkpoints["final_adapter"]["step"], checkpoints["final_adapter"]["auto_stopped"],
+                          checkpoints["final_adapter"]["early_stopped"]), (13, True, False))
+        folders = {row["name"]: row for row in self.client.get(f"/api/projects/{name}/adapters").json()}
+        self.assertEqual((folders["overfit_run"]["checkpoints"], folders["overfit_run"]["has_final"],
+                          folders["overfit_run"]["has_best"]), (7, True, True))
+        adapters = [item for item in self.client.get("/api/adapters").json() if item["project"] == "overfit_run"]
+        best_items = [item for item in adapters if item["kind"] == "best"]
+        self.assertEqual(len(best_items), 1, adapters)
+        self.assertEqual(best_items[0]["checkpoint"], "best_adapter")
+        self.assertEqual(best_items[0]["label"], "overfit_run · best")
+        self.assertEqual([item["kind"] for item in adapters][:2], ["final", "best"])
+        metrics = self.client.get(f"/api/projects/{name}/metrics", params={"adapter": "overfit_run"}).json()
+        labels = {series["label"]: series for series in metrics["series"]}
+        self.assertEqual([point[0] for point in labels["validation/loss"]["points"]], [2, 4, 6, 8, 10, 12, 13])
+
+        # Resuming from the auto-stop checkpoint restores the saved comparison (best at step 8).
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "resume_checkpoint": checkpoints["checkpoint-step-000013"]["path"]}})
+        self.assertEqual(response.status_code, 202, response.text)
+        terminal = self.finish()
+        self.assertEqual(terminal["status"], "succeeded", terminal)
+        self.assertTrue(terminal["auto_stopped"])
+        self.assertGreater(terminal["step"], 13)
+        self.assertEqual(terminal["auto_stop"]["best_step"], 8)  # restored, not reset to the resumed run
+        self.assertEqual(json.loads((self.root / "training/outputs/overfit_run/best_adapter/adapter_state.json")
+                                    .read_text())["step"], 8)
+
+    def test_auto_stop_without_validation_or_with_long_watch_interval_is_rejected(self):
+        name = self.prepare(auto_stop_enabled=True)
+        response = self.client.post("/api/training/start", json={"project": name})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Auto stop needs validation loss", response.json()["error"]["message"])
+        self.enable_validation(name)
+        response = self.client.post("/api/training/start", json={"project": name, "training": {
+            "auto_stop_patience_steps": 10, "auto_stop_watch_interval_steps": 11}})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("must not exceed the patience", response.json()["error"]["message"])
+        self.assertFalse(self.state.training.snapshot()["running"])
+        self.assertFalse((self.root / "training/outputs/trainer/training_config.json").exists())
+        # Interval equal to patience is accepted; a disabled auto stop ignores its values.
+        for training in ({"auto_stop_patience_steps": 10, "auto_stop_watch_interval_steps": 10},
+                         {"auto_stop_enabled": False, "auto_stop_patience_steps": 1, "auto_stop_watch_interval_steps": 5}):
+            with self.subTest(training=training):
+                response = self.client.post("/api/training/start", json={"project": name, "training": training})
+                self.assertEqual(response.status_code, 202, response.text)
+                terminal = self.finish()
+                self.assertEqual((terminal["status"], terminal["step"], terminal["auto_stopped"]), ("succeeded", 3, False))
+        self.assertIsNone(terminal["auto_stop"])
+        self.assertEqual(self.client.put(f"/api/projects/{name}/training", json={
+            "auto_stop_patience_steps": 0}).status_code, 400)
+
     def test_tensorboard_never_opens_browser(self):
         self.prepare()
         with patch.object(self.state.training, "start_tensorboard", return_value="TensorBoard started.") as start:

@@ -11,6 +11,7 @@ import torchaudio
 from indextts_training.schedule import (
     checkpoint_due as _checkpoint_due, validation_due as _validation_due, write_adapter_state,
 )
+from indextts_training.auto_stop import monitor_from_config
 
 
 PHONETIC_BLANK = 0
@@ -626,6 +627,9 @@ def train_lora(config, callback, stop_event):
         raise RuntimeError('Validation manifest is empty.')
     validation_interval = validation.get('interval_steps') if validation else None
     validation_dense = validation.get('dense') if validation else None
+    monitor = monitor_from_config(config, validation.get('fingerprint') if validation else None)
+    if monitor is not None and not validation_rows:
+        raise RuntimeError('Auto stop needs validation loss. Enable validation for this project first.')
     saved_config = dict(config)
     if validation:
         saved_config['validation'] = {key: value for key, value in validation.items() if key != 'rows'}
@@ -695,17 +699,25 @@ def train_lora(config, callback, stop_event):
         state=Path(resume)/'trainer_state.pt'
         if state.is_file():
             st=torch.load(state,map_location='cpu'); start_step=int(st.get('step',0)); opt.load_state_dict(st['optimizer']); sched.load_state_dict(st['scheduler'])
+            if monitor is not None and st.get('auto_stop'):
+                if monitor.restore(st['auto_stop']):
+                    callback(message=f'Auto stop state restored from step {start_step}.')
+                else:
+                    callback(message='Auto stop state was not restored: the validation set changed. Starting a new comparison.')
     if start_step>=end_step:
         raise RuntimeError(f'Resume checkpoint is already at step {start_step}, at or beyond the end step {end_step}.')
     opt.zero_grad(set_to_none=True); started=time.time(); ema=None; step=start_step; cursor=(start_step*micro*accum)%len(rows)
     save_every=max(1,int(config['save_every']))
 
-    def save_adapter(directory, saved_step):
+    def save_adapter(directory, saved_step, extra=None):
         directory.mkdir(parents=True, exist_ok=True)
         tts.gpt.gpt.save_pretrained(str(directory), safe_serialization=True)
         torch.save({'step': saved_step, 'optimizer': opt.state_dict(),
-                    'scheduler': sched.state_dict(), 'config': saved_config}, directory/'trainer_state.pt')
-        write_adapter_state(directory, saved_step, total, end_step, stop_event.is_set())
+                    'scheduler': sched.state_dict(), 'config': saved_config,
+                    'auto_stop': monitor.to_dict() if monitor is not None else None}, directory/'trainer_state.pt')
+        write_adapter_state(directory, saved_step, total, end_step, stop_event.is_set(), extra)
+
+    auto_stopped = False
 
     # A resume from an earlier checkpoint can replay previously logged steps.
     # Retain the checkpoint's metrics and hide later events before appending.
@@ -752,34 +764,68 @@ def train_lora(config, callback, stop_event):
 
             checkpoint = out / f'checkpoint-step-{step:06d}'
             checkpoint_due = _checkpoint_due(step, save_every, end_step)
-            if checkpoint_due:
-                save_adapter(checkpoint, step)
 
-            if validation_rows and _validation_due(step, end_step=end_step, save_every=save_every,
-                                                   interval=validation_interval, dense=validation_dense):
+            # Validate before saving the step's checkpoint so the saved auto-stop
+            # state already contains this step's observation (resume-safe).
+            validation_due = validation_rows and (
+                _validation_due(step, end_step=end_step, save_every=save_every,
+                                interval=validation_interval, dense=validation_dense)
+                or (monitor is not None and monitor.extra_validation_due(step)))
+            if validation_due:
                 callback(message=f'Running validation at step {step}…')
                 try:
                     validation_loss = _validation_loss(tts, validation_rows, device, step, stop_event)
                 except Exception as exc:
-                    if not checkpoint_due:
-                        try:
-                            save_adapter(checkpoint, step)
-                        except Exception as save_exc:
-                            raise RuntimeError(f'Validation failed at step {step}; checkpoint save also failed: {save_exc}') from exc
+                    try:
+                        save_adapter(checkpoint, step)
+                    except Exception as save_exc:
+                        raise RuntimeError(f'Validation failed at step {step}; checkpoint save also failed: {save_exc}') from exc
                     raise
                 if validation_loss is None:
+                    if checkpoint_due:
+                        save_adapter(checkpoint, step)
                     break
                 writer.add_scalar('validation/loss', validation_loss, step)
-                writer.flush()
                 callback(message=f'Validation loss at step {step}: {validation_loss:.6f}')
+                if monitor is not None:
+                    event = monitor.observe(step, validation_loss)
+                    snapshot = monitor.snapshot()
+                    writer.add_scalar('auto_stop/best_loss', snapshot['best_loss'], step)
+                    writer.add_scalar('auto_stop/valley_loss', snapshot['valley_loss'], step)
+                    writer.add_scalar('auto_stop/watching', 0.0 if snapshot['phase'] == 'normal' else 1.0, step)
+                    if event['new_best']:
+                        save_adapter(out / 'best_adapter', step,
+                                     {'kind': 'best', 'validation_loss': float(validation_loss)})
+                        callback(message=f'Saved best adapter at step {step} (validation loss {validation_loss:.6f}).')
+                    if event['entered_watch']:
+                        callback(message=f'Auto stop: no significant improvement at step {step}; validating every '
+                                         f'{monitor.watch_interval_steps} steps until step {snapshot["deadline_step"]}.')
+                    if event['recovered']:
+                        callback(message=f'Auto stop: validation loss improved to {validation_loss:.6f} at step {step}; '
+                                         f'resuming normal validation.')
+                    if event['stop']:
+                        auto_stopped = True
+                        checkpoint_due = True
+                    callback(auto_stop=snapshot)
+                writer.flush()
 
             if checkpoint_due:
+                save_adapter(checkpoint, step, {'auto_stopped': True} if auto_stopped else None)
                 eval_wav=_generate_eval(tts,config,step,out,writer)
                 writer.flush()
                 callback(message=f'Saved checkpoint: {checkpoint.name}' + (f' | Eval: {Path(eval_wav).name}' if eval_wav else ''))
+            if auto_stopped:
+                break
         final = out / 'final_adapter'
-        save_adapter(final, step)
+        save_adapter(final, step, {'auto_stopped': True} if auto_stopped else None)
     del tts; torch.cuda.empty_cache()
     stopped=stop_event.is_set()
-    return {'step':step,'total':total,'schedule_total':total,'end_step':end_step,'output':str(final),'stopped':stopped,
-            'early_stopped':(not stopped and end_step<total and step==end_step)}
+    result={'step':step,'total':total,'schedule_total':total,'end_step':end_step,'output':str(final),'stopped':stopped,
+            'early_stopped':(not stopped and not auto_stopped and end_step<total and step==end_step),
+            'auto_stopped':auto_stopped and not stopped}
+    if monitor is not None:
+        snapshot=monitor.snapshot()
+        result.update(best_step=snapshot['best_step'],best_loss=snapshot['best_loss'],valley_step=snapshot['valley_step'],
+                      watch_start_step=snapshot['watch_start_step'],min_delta=monitor.min_delta,
+                      patience_steps=monitor.patience_steps,auto_stop=snapshot)
+    return result
