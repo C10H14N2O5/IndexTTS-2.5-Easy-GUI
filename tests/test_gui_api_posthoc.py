@@ -222,7 +222,7 @@ class PosthocApiTests(GuiApiTestCase):
         self.assertIsNone(self.items()["final_adapter"]["same_as"])
 
     def test_best_adapter_reuses_identical_checkpoint_and_evaluates_when_distinct(self):
-        status = self.train(training={"auto_stop_enabled": True})
+        status = self.train(training={"auto_stop_enabled": True, "auto_stop_grace_steps": 0})
         self.assertFalse(status["auto_stopped"])
         listing = {item["name"]: item for item in self.client.get("/api/projects/post/checkpoints").json()}
         best = listing["best_adapter"]
@@ -254,7 +254,7 @@ class PosthocApiTests(GuiApiTestCase):
         self.assertAlmostEqual(item["loss"], fake_loss(step))
 
     def test_best_adapter_without_twin_is_evaluated(self):
-        self.train(training={"auto_stop_enabled": True})
+        self.train(training={"auto_stop_enabled": True, "auto_stop_grace_steps": 0})
         step = self.client.get("/api/projects/post/checkpoints").json()
         step = next(item["step"] for item in step if item["name"] == "best_adapter")
         shutil.rmtree(self.out / f"checkpoint-step-{step:06d}")

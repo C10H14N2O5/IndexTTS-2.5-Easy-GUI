@@ -242,5 +242,11 @@
   "Stops at step {0} unless validation improves by at least {1}.": "除非验证损失改善至少 {1}，否则将在第 {0} 步终止。",
   "Best adapter": "最优适配器",
   "Auto stopped": "已自动终止",
-  "best adapter": "最优适配器"
+  "best adapter": "最优适配器",
+  "Grace period (steps)": "豁免期（步）",
+  "Validations up to this step only record the best result and never start a watch period. This run's learning-rate warmup is {0} steps.": "在此步数及之前的验证只记录最优结果，不会进入观察期。本次训练的学习率预热为 {0} 步。",
+  "The grace period is shorter than the warmup; the warmup plateau may start a watch period.": "豁免期短于学习率预热，预热期间的验证损失平台可能会触发观察期。",
+  "Enter a whole number of steps between 0 and 1000000.": "请输入 0 到 1000000 之间的整数步数。",
+  "The grace period must end before the last training step ({0}).": "豁免期必须在最后一个训练步（第 {0} 步）之前结束。",
+  "Grace period: no watch period before step {0}": "豁免期：第 {0} 步之前不会进入观察期"
 }

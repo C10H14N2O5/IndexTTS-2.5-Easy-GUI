@@ -14,6 +14,10 @@ State machine
     the valley, ends the watch and restores normal validation. Reaching
     ``watch_start_step + patience_steps`` while still watching stops training.
 
+Grace period: validations at or before ``grace_steps`` (global step) still
+update the best loss and the valley but never start a watch, so the flat
+validation loss of the learning-rate warmup cannot stop training.
+
 ``best_loss`` is tracked independently and updates on any improvement; it is
 used to keep the best weights, while ``valley_loss`` is the patience reference.
 """
@@ -27,10 +31,12 @@ STOPPED = 'stopped'
 
 
 class AutoStopMonitor:
-    def __init__(self, patience_steps, min_delta, watch_interval_steps, fingerprint=None):
+    def __init__(self, patience_steps, min_delta, watch_interval_steps, fingerprint=None, grace_steps=0):
         self.patience_steps = max(1, int(patience_steps))
         self.min_delta = max(0.0, float(min_delta))
         self.watch_interval_steps = max(1, int(watch_interval_steps))
+        # Validations at or before this global step never start a watch (warmup plateau).
+        self.grace_steps = max(0, int(grace_steps or 0))
         self.fingerprint = fingerprint
         self.phase = NORMAL
         self.best_loss = None
@@ -53,6 +59,10 @@ class AutoStopMonitor:
         if self.phase != WATCHING or self.valley_loss is None or self.watch_best_loss is None:
             return 0.0
         return max(0.0, self.valley_loss - self.watch_best_loss)
+
+    def in_grace(self, step):
+        """True while ``step`` is inside the grace period (inclusive)."""
+        return int(step) <= self.grace_steps
 
     def _significant(self, loss):
         gain = self.valley_loss - loss
@@ -79,6 +89,16 @@ class AutoStopMonitor:
             event['new_best'] = True
         if self.valley_loss is None:
             self.valley_loss, self.valley_step = loss, step
+            return event
+        if self.in_grace(step):
+            # Grace period: keep tracking the valley, but never watch or stop. A watch
+            # restored from a checkpoint (e.g. after the grace period was enlarged) ends here.
+            if self.phase == WATCHING:
+                self.phase = NORMAL
+                self.watch_start_step = None
+                self.watch_best_loss = None
+            if self._significant(loss):
+                self.valley_loss, self.valley_step = loss, step
             return event
         if self.phase == NORMAL:
             if self._significant(loss):
@@ -113,6 +133,7 @@ class AutoStopMonitor:
             if self.phase != NORMAL and self.watch_start_step is not None else None,
             'improvement': self.improvement, 'min_delta': self.min_delta,
             'patience_steps': self.patience_steps, 'watch_interval_steps': self.watch_interval_steps,
+            'grace_steps': self.grace_steps,
         }
 
     def to_dict(self):
@@ -155,4 +176,5 @@ def monitor_from_config(config, fingerprint=None):
     if not settings:
         return None
     return AutoStopMonitor(settings['patience_steps'], settings['min_delta'],
-                           settings['watch_interval_steps'], fingerprint)
+                           settings['watch_interval_steps'], fingerprint,
+                           grace_steps=settings.get('grace_steps') or 0)

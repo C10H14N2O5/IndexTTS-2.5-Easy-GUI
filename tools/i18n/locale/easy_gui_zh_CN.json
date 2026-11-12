@@ -753,5 +753,6 @@
   "Auto stop: validation loss improved to {0:.6f} at step {1}; resuming normal validation.": "自动终止：第 {1} 步验证损失改善到 {0:.6f}，恢复正常验证。",
   "Auto stop needs validation loss. Enable validation for this project first.": "自动终止依赖验证损失，请先为本项目启用验证。",
   "The watch validation interval must not exceed the patience steps.": "观察期验证间隔不能大于耐心步数。",
-  "{0} · best": "{0} · 最优适配器"
+  "{0} · best": "{0} · 最优适配器",
+  "The auto stop grace period must end before the last training step ({0}).": "自动终止的豁免期必须在最后一个训练步（第 {0} 步）之前结束。"
 }

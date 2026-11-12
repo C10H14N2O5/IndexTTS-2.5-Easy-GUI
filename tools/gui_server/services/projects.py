@@ -31,6 +31,7 @@ class TrainingConfig(ApiModel):
     auto_stop_patience_steps: int = Field(200, ge=1, le=1_000_000)
     auto_stop_min_delta: float = Field(0.005, ge=0, le=10)
     auto_stop_watch_interval_steps: int = Field(25, ge=1, le=1_000_000)
+    auto_stop_grace_steps: int = Field(200, ge=0, le=1_000_000)
     lora_rank: Literal[4, 8, 16, 32, 64, 128, 256] = 16
     lora_alpha: int = Field(32, ge=1, le=512)
     lora_dropout: float = Field(0.05, ge=0, le=0.2)

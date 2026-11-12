@@ -26,6 +26,7 @@ class AutoStopStatus(OpenModel):
     min_delta: float = 0
     patience_steps: int = 0
     watch_interval_steps: int = 0
+    grace_steps: int = 0
 
 
 class TrainingSnapshot(OpenModel):
@@ -121,9 +122,15 @@ def start(name: str, overrides: dict | None = None) -> dict:
                 raise ServiceError("Auto stop needs validation loss. Enable validation for this project first.")
             if values["auto_stop_watch_interval_steps"] > values["auto_stop_patience_steps"]:
                 raise ServiceError("The watch validation interval must not exceed the patience steps.")
+            last_step = end_step or (values["training_steps"] if values["mode"] == "Steps"
+                                     else values["training_epochs"] * updates)
+            if values["auto_stop_grace_steps"] >= last_step:
+                raise ServiceError("The auto stop grace period must end before the last training step ({0}).",
+                                   last_step)
             auto_stop = dict(patience_steps=values["auto_stop_patience_steps"],
                              min_delta=values["auto_stop_min_delta"],
-                             watch_interval_steps=values["auto_stop_watch_interval_steps"])
+                             watch_interval_steps=values["auto_stop_watch_interval_steps"],
+                             grace_steps=values["auto_stop_grace_steps"])
         cfg = dict(manifest=manifest, model_dir=str(state.extras.get("model_dir", paths.MODEL_DIR)),
                    output_dir=str(output), mode=values["mode"], steps=values["training_steps"],
                    epochs=values["training_epochs"], save_every=values["save_steps"] if values["mode"] == "Steps"

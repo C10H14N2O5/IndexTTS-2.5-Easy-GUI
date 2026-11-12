@@ -1253,6 +1253,11 @@ export interface components {
              * @default 0
              */
             watch_interval_steps: number;
+            /**
+             * Grace Steps
+             * @default 0
+             */
+            grace_steps: number;
         } & {
             [key: string]: unknown;
         };
@@ -2428,6 +2433,11 @@ export interface components {
              * @default 25
              */
             auto_stop_watch_interval_steps: number;
+            /**
+             * Auto Stop Grace Steps
+             * @default 200
+             */
+            auto_stop_grace_steps: number;
             /**
              * Lora Rank
              * @default 16

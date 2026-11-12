@@ -473,10 +473,12 @@ def test_validation_loss_reports_each_sample(training):
 U_SHAPE = {4: 3.0, 8: 2.5, 12: 2.45, 14: 2.6, 15: 2.7}
 
 
-def enable_auto_stop(training, patience=3, min_delta=0.1, interval=2, losses=None, **config):
+def enable_auto_stop(training, patience=3, min_delta=0.1, interval=2, losses=None, grace=None, **config):
     training.config.update(steps=20, save_every=4, **config)
     training.config['auto_stop'] = {'patience_steps': patience, 'min_delta': min_delta,
                                     'watch_interval_steps': interval}
+    if grace is not None:
+        training.config['auto_stop']['grace_steps'] = grace
     training.validation_losses.update(U_SHAPE if losses is None else losses)
 
 
@@ -564,6 +566,28 @@ def test_auto_stop_recovery_continues_to_planned_end(training):
     assert 'Auto stop: validation loss improved to 2.800000 at step 12; resuming normal validation.' in messages(training)
     assert 'auto_stopped' not in adapter_state(training.out / 'final_adapter')
     assert adapter_state(training.out / 'best_adapter')['step'] == 20
+
+
+WARMUP_PLATEAU = {step: 6.0 if step <= 8 else 6.0 - 0.3 * (step - 8) for step in range(1, 21)}
+
+
+@pytest.mark.parametrize('grace', [None, 0, 8])
+def test_grace_period_ignores_the_warmup_plateau(training, grace):
+    enable_auto_stop(training, patience=3, interval=1, losses=WARMUP_PLATEAU, grace=grace)
+    training.config['validation']['interval_steps'] = 2
+    result = training.run()
+    steps = [step for step, _ in validation_points(training.writer)]
+    if grace:
+        # Validations up to step 8 are exempt; the loss then falls and training runs to the end.
+        assert steps == list(range(2, 21, 2))
+        assert result['step'] == 20 and not result['auto_stopped']
+        assert result['auto_stop']['phase'] == 'normal' and result['auto_stop']['grace_steps'] == 8
+        assert not any('no significant improvement' in text for text in messages(training))
+    else:
+        # Without a grace period the plateau starts a watch at step 4 and stops at 7.
+        assert steps == [2, 4, 5, 6, 7]
+        assert result['step'] == 7 and result['auto_stopped']
+        assert result['auto_stop']['grace_steps'] == 0
 
 
 def test_auto_stop_requires_validation_rows(training):

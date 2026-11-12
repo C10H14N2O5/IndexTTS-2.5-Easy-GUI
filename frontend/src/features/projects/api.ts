@@ -46,6 +46,10 @@ export function useValidationResults(name: string, adapter: string, poll = false
 export function useStartValidationRun(name: string) { return useMutation({ mutationFn: (body: ValidationRunRequest) => api.post<{ job: Job }>(`${projectUrl(name)}/validation-runs`, body) }); }
 /** LR schedule length the server will plan (mirrors services/training.start). */
 export function plannedSteps(training: TrainingConfig, validClips: number) { const updates = Math.max(1, Math.ceil(Math.max(1, validClips) / Math.max(1, training.micro_batch * training.grad_accum))); return training.mode === 'Steps' ? training.training_steps : training.training_epochs * updates; }
+/** Python's round(): half to even, so warmup matches the trainer exactly. */
+export function roundHalfEven(value: number) { const floor = Math.floor(value); const rest = value - floor; return rest > .5 ? floor + 1 : rest < .5 ? floor : floor % 2 === 0 ? floor : floor + 1; }
+/** LR warmup length the trainer uses for a planned schedule (mirrors the trainer's max(20, min(100, round(total * 0.05)))). */
+export function warmupSteps(planned: number) { return Math.max(20, Math.min(100, roundHalfEven(planned * .05))); }
 export function checkpointStep(path: string, checkpoints?: Checkpoint[]) { const known = checkpoints?.find(item => item.path === path)?.step; if (known != null) return known; const suffix = path.split(/[\\/]/).filter(Boolean).pop()?.split('-').pop() ?? ''; return /^\d+$/.test(suffix) ? Number(suffix) : null; }
 export function useStopTraining() { return useMutation({ mutationFn: () => api.post<TrainingStatus>('/api/training/stop'), onSuccess: data => applyEvent('training', data) }); }
 export type AutoStopStatus = Schemas['AutoStopStatus'];

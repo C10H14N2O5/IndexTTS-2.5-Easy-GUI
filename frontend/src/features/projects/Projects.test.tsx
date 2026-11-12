@@ -15,7 +15,7 @@ import TrainingPage from './TrainingPage';
 import CorpusPage from './CorpusPage';
 import ValidationPage from './ValidationPage';
 import OutputsPage from './OutputsPage';
-import { curveSeries, type Checkpoint, type Project, type TrainingStatus } from './api';
+import { curveSeries, warmupSteps, type Checkpoint, type Project, type TrainingStatus } from './api';
 
 const guard = vi.hoisted(() => ({ allow: true, locked: false, order: [] as string[] }));
 vi.mock('@/features/proofread/ProofreadPanel', () => ({ ProofreadPanel: function MockPanel(props: { project: string; directory: string; role: string; language: string; ref?: Ref<{ prepareContextChange: (commit: () => Promise<unknown>) => Promise<boolean> }>; onContextLockedChange?: (locked: boolean) => void; onUpdated?: () => void }) {
@@ -200,7 +200,7 @@ describe('post-hoc validation loss', () => {
   });
 });
 
-const watching: NonNullable<TrainingStatus['auto_stop']> = { phase: 'watching', best_loss: 1.23456, best_step: 300, valley_loss: 1.23456, valley_step: 300, watch_start_step: 325, deadline_step: 525, improvement: .0012, min_delta: .005, patience_steps: 200, watch_interval_steps: 25 };
+const watching: NonNullable<TrainingStatus['auto_stop']> = { phase: 'watching', best_loss: 1.23456, best_step: 300, valley_loss: 1.23456, valley_step: 300, watch_start_step: 325, deadline_step: 525, improvement: .0012, min_delta: .005, patience_steps: 200, watch_interval_steps: 25, grace_steps: 200 };
 const withBest = (adapter: string) => adapter === 'voice' ? [...checkpointsFixture(adapter).map(item => item.kind === 'final' ? { ...item, early_stopped: false, auto_stopped: true } : item), bestCheckpoint] : checkpointsFixture(adapter);
 describe('auto stop', () => {
   it('saves the auto stop settings from the training form', async () => {
@@ -227,6 +227,49 @@ describe('auto stop', () => {
     expect(screen.getByText('0.0012 / 0.0050')).toBeInTheDocument(); expect(screen.getByText('Watching since step 325')).toBeInTheDocument(); expect(screen.getByText('Stops at step 525 unless validation improves by at least 0.0050.')).toBeInTheDocument();
     act(() => applyEvent('training', { ...idleTraining, status: 'succeeded', project: 'voice', adapter: 'voice', step: 525, total: 1000, auto_stopped: true, message: 'Training stopped automatically at step 525.', auto_stop: { ...watching, phase: 'stopped' } }));
     expect(await screen.findByText('Stopped automatically')).toBeInTheDocument(); expect(screen.getByText('Training stopped automatically at step 525.')).toBeInTheDocument(); expect(screen.queryByText(/unless validation improves/)).not.toBeInTheDocument(); expect(screen.queryByText('Watching')).not.toBeInTheDocument();
+  });
+  it('saves and resets the grace period, counting it as a modified setting', async () => {
+    project.validation = { ...project.validation, enabled: true }; project.validation_status = { ...project.validation_status, stale: false }; project.training = { ...project.training, auto_stop_enabled: true }; mount();
+    const grace = await screen.findByRole('spinbutton', { name: 'Grace period (steps)' }); expect(grace).toHaveValue(200); expect(screen.getByRole('button', { name: /Auto stop/ })).toHaveTextContent('1 modified');
+    await userEvent.clear(grace); await userEvent.type(grace, '300'); expect(screen.getByRole('button', { name: /Auto stop/ })).toHaveTextContent('2 modified');
+    await userEvent.click(screen.getByRole('button', { name: 'Save settings' })); await waitFor(() => expect(project.training).toMatchObject({ auto_stop_enabled: true, auto_stop_grace_steps: 300 }));
+    await userEvent.click(within(screen.getByText('Grace period (steps)').closest('label')!.parentElement!).getByRole('button', { name: 'Reset to default' })); expect(grace).toHaveValue(200); expect(screen.getByRole('button', { name: /Auto stop/ })).toHaveTextContent('1 modified');
+    await userEvent.click(screen.getByRole('button', { name: 'Save settings' })); await waitFor(() => expect(project.training.auto_stop_grace_steps).toBe(200));
+  });
+  it('computes the warmup like the trainer, rounding half to even', () => {
+    expect([1580, 300, 1570, 1590, 1530, 1550, 5000, 100].map(warmupSteps)).toEqual([79, 20, 78, 80, 76, 78, 100, 20]);
+  });
+  it.each([[1580, 79], [300, 20]])('shows the learning-rate warmup for a planned %i-step schedule', async (steps, warmup) => {
+    project.training = { ...project.training, training_steps: steps, auto_stop_enabled: true }; mount();
+    expect(await screen.findByText(`Validations up to this step only record the best result and never start a watch period. This run's learning-rate warmup is ${warmup} steps.`)).toBeInTheDocument();
+  });
+  it('warns without blocking when the grace period is shorter than the warmup', async () => {
+    const warning = 'The grace period is shorter than the warmup; the warmup plateau may start a watch period.';
+    project.training = { ...project.training, auto_stop_enabled: true, auto_stop_grace_steps: 30 }; mount();
+    expect(await screen.findByText(warning)).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Save settings' })).toBeEnabled();
+    const grace = screen.getByRole('spinbutton', { name: 'Grace period (steps)' }); await userEvent.clear(grace); await userEvent.type(grace, '0'); expect(screen.queryByText(warning)).not.toBeInTheDocument();
+    await userEvent.clear(grace); await userEvent.type(grace, '50'); expect(screen.queryByText(warning)).not.toBeInTheDocument();
+  });
+  it('rejects a grace period that reaches the last training step', async () => {
+    project.training = { ...project.training, auto_stop_enabled: true, auto_stop_grace_steps: 1000 }; mount();
+    expect((await screen.findAllByText('The grace period must end before the last training step (1000).')).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Save and start training' })).toBeDisabled();
+    const grace = screen.getByRole('spinbutton', { name: 'Grace period (steps)' }); await userEvent.clear(grace); await userEvent.type(grace, '999'); expect(screen.getByRole('button', { name: 'Save settings' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('switch', { name: 'Early stop' })); const stop = screen.getByRole('spinbutton', { name: 'Stop at step' }); await userEvent.clear(stop); await userEvent.type(stop, '400');
+    await userEvent.clear(grace); await userEvent.type(grace, '400'); expect(screen.getAllByText('The grace period must end before the last training step (400).').length).toBeGreaterThan(0); expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled();
+    await userEvent.clear(grace); await userEvent.type(grace, '399'); expect(screen.queryByText(/The grace period must end/)).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Save settings' })).toBeEnabled();
+  });
+  it('rejects a grace period outside 0 to 1000000 steps', async () => {
+    project.training = { ...project.training, auto_stop_enabled: true, auto_stop_grace_steps: -1 }; mount();
+    expect((await screen.findAllByText('Enter a whole number of steps between 0 and 1000000.')).length).toBeGreaterThan(0); expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled();
+  });
+  it('shows the grace period in the monitor only while a run is inside it', async () => {
+    const line = 'Grace period: no watch period before step 200'; const normal = { ...watching, phase: 'normal' as const, watch_start_step: null, deadline_step: null };
+    useLive.setState({ training: { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 150, total: 1000, auto_stop: normal } }); mount();
+    expect(await screen.findByText(line)).toBeInTheDocument();
+    act(() => applyEvent('training', { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 250, total: 1000, auto_stop: normal })); await waitFor(() => expect(screen.queryByText(line)).not.toBeInTheDocument());
+    act(() => applyEvent('training', { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 150, total: 1000, auto_stop: { ...normal, grace_steps: 0 } })); expect(screen.queryByText(/Grace period:/)).not.toBeInTheDocument();
+    act(() => applyEvent('training', { ...idleTraining, status: 'stopped', stopped: true, project: 'voice', adapter: 'voice', step: 150, total: 1000, auto_stop: normal })); expect(screen.queryByText(line)).not.toBeInTheDocument();
   });
   it('keeps auto stop series out of the learning curves', async () => {
     const labels = ['train/loss', 'train/loss_ema', 'train/lr', 'validation/loss', 'auto_stop/best_loss', 'auto_stop/valley_loss', 'auto_stop/watching'];

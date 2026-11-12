@@ -174,7 +174,8 @@ class TrainingApiTests(GuiApiTestCase):
         self.assertEqual(response.status_code, 200, response.text)
 
     AUTO_STOP = dict(adapter_name="overfit_run", training_steps=20, save_steps=2, auto_stop_enabled=True,
-                     auto_stop_patience_steps=3, auto_stop_min_delta=0.01, auto_stop_watch_interval_steps=3)
+                     auto_stop_patience_steps=3, auto_stop_min_delta=0.01, auto_stop_watch_interval_steps=3,
+                     auto_stop_grace_steps=0)
 
     def test_auto_stop_ends_overfitting_run_and_keeps_best_adapter(self):
         name = self.prepare(**self.AUTO_STOP)
@@ -195,7 +196,9 @@ class TrainingApiTests(GuiApiTestCase):
         self.assertIn("within 3 steps", terminal["message"])
         self.assertIn("at step 8", terminal["message"])
         persisted = json.loads((self.root / "training/outputs/overfit_run/training_config.json").read_text())
-        self.assertEqual(persisted["auto_stop"], {"patience_steps": 3, "min_delta": 0.01, "watch_interval_steps": 3})
+        self.assertEqual(persisted["auto_stop"], {"patience_steps": 3, "min_delta": 0.01, "watch_interval_steps": 3,
+                                                  "grace_steps": 0})
+        self.assertEqual(terminal["auto_stop"]["grace_steps"], 0)
         checkpoints = {row["name"]: row for row in self.client.get(f"/api/projects/{name}/checkpoints").json()}
         self.assertEqual(set(checkpoints), {f"checkpoint-step-{step:06d}" for step in (2, 4, 6, 8, 10, 12, 13)}
                          | {"best_adapter", "final_adapter"})
@@ -244,8 +247,19 @@ class TrainingApiTests(GuiApiTestCase):
         self.assertIn("must not exceed the patience", response.json()["error"]["message"])
         self.assertFalse(self.state.training.snapshot()["running"])
         self.assertFalse((self.root / "training/outputs/trainer/training_config.json").exists())
+        # The grace period must end before the last step (the early-stop step when enabled).
+        for training, last in (({}, 3), ({"training_steps": 30, "early_stop_enabled": True, "early_stop_step": 20,
+                                          "auto_stop_grace_steps": 20}, 20)):
+            with self.subTest(grace=training):
+                response = self.client.post("/api/training/start", json={"project": name, "training": training})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn(f"grace period must end before the last training step ({last})",
+                              response.json()["error"]["message"])
+        self.assertEqual(self.client.put(f"/api/projects/{name}/training", json={
+            "auto_stop_grace_steps": -1}).status_code, 400)
         # Interval equal to patience is accepted; a disabled auto stop ignores its values.
-        for training in ({"auto_stop_patience_steps": 10, "auto_stop_watch_interval_steps": 10},
+        for training in ({"auto_stop_patience_steps": 10, "auto_stop_watch_interval_steps": 10,
+                          "auto_stop_grace_steps": 2},
                          {"auto_stop_enabled": False, "auto_stop_patience_steps": 1, "auto_stop_watch_interval_steps": 5}):
             with self.subTest(training=training):
                 response = self.client.post("/api/training/start", json={"project": name, "training": training})

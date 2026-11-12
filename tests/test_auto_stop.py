@@ -192,7 +192,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(m.snapshot(), {
             'phase': 'normal', 'best_loss': None, 'best_step': None, 'valley_loss': None, 'valley_step': None,
             'watch_start_step': None, 'deadline_step': None, 'improvement': 0.0, 'min_delta': 0.1,
-            'patience_steps': 10, 'watch_interval_steps': 2})
+            'patience_steps': 10, 'watch_interval_steps': 2, 'grace_steps': 0})
         m.observe(10, 2.0)
         m.observe(20, 2.2)
         m.observe(22, 1.96)
@@ -287,6 +287,61 @@ class ConfigTests(unittest.TestCase):
         self.assertIsInstance(m, AutoStopMonitor)
         self.assertEqual((m.patience_steps, m.min_delta, m.watch_interval_steps, m.fingerprint, m.phase),
                          (200, 0.005, 25, FINGERPRINT, 'normal'))
+        self.assertEqual(m.grace_steps, 0)  # configs saved before the grace period existed
+        m = monitor_from_config({'auto_stop': {'patience_steps': 200, 'min_delta': 0.005, 'watch_interval_steps': 25,
+                                               'grace_steps': 150}})
+        self.assertEqual((m.grace_steps, m.snapshot()['grace_steps']), (150, 150))
+
+
+class GracePeriodTests(unittest.TestCase):
+    def grace(self, grace=40, patience=20, min_delta=0.1, interval=10):
+        return AutoStopMonitor(patience, min_delta, interval, FINGERPRINT, grace_steps=grace)
+
+    def test_plateau_and_rise_inside_grace_never_watch_but_track_best_and_valley(self):
+        m = self.grace(grace=40)
+        self.assertEqual(m.observe(10, 6.04), event(new_best=True))
+        self.assertEqual(m.observe(20, 6.04), NO_EVENT)          # warmup plateau
+        self.assertEqual(m.observe(30, 6.10), NO_EVENT)          # a rise
+        self.assertEqual(m.observe(40, 6.03), event(new_best=True))  # boundary step is still exempt
+        self.assertEqual(m.phase, 'normal')
+        self.assertEqual((m.best_step, m.valley_step, m.valley_loss), (40, 10, 6.04))
+        self.assertFalse(any(m.extra_validation_due(step) for step in range(1, 60)))
+        self.assertTrue(m.in_grace(40))
+        self.assertFalse(m.in_grace(41))
+
+    def test_significant_gain_inside_grace_moves_valley(self):
+        m = self.grace(grace=40)
+        m.observe(10, 6.0)
+        m.observe(20, 5.5)
+        self.assertEqual((m.valley_step, m.valley_loss), (20, 5.5))
+
+    def test_first_validation_after_grace_follows_the_normal_rules(self):
+        m = self.grace(grace=40, patience=20)
+        m.observe(10, 6.0)
+        m.observe(40, 6.0)
+        self.assertEqual(m.observe(50, 6.0), event(entered_watch=True))
+        self.assertEqual((m.watch_start_step, m.deadline_step), (50, 70))
+        m2 = self.grace(grace=40)
+        m2.observe(10, 6.0)
+        self.assertEqual(m2.observe(50, 5.0), event(new_best=True))
+        self.assertEqual((m2.phase, m2.valley_step), ('normal', 50))
+
+    def test_restored_watch_inside_grace_is_cancelled(self):
+        source = AutoStopMonitor(20, 0.1, 10, FINGERPRINT)
+        source.observe(10, 6.0)
+        source.observe(20, 6.0)
+        self.assertEqual(source.phase, 'watching')
+        target = self.grace(grace=100)
+        self.assertTrue(target.restore(source.to_dict()))
+        self.assertEqual(target.observe(30, 6.0), NO_EVENT)
+        self.assertEqual((target.phase, target.watch_start_step, target.deadline_step), ('normal', None, None))
+        self.assertEqual(target.observe(40, 6.0), NO_EVENT)  # still exempt, no stop at the old deadline
+
+    def test_zero_grace_matches_the_original_behaviour(self):
+        plain, zero = AutoStopMonitor(20, 0.1, 10, FINGERPRINT), self.grace(grace=0)
+        for step, loss in [(10, 6.0), (20, 6.0), (30, 5.95), (40, 6.1)]:
+            self.assertEqual(plain.observe(step, loss), zero.observe(step, loss))
+        self.assertEqual(plain.to_dict(), zero.to_dict())
 
 
 class ManagerMessageTests(unittest.TestCase):

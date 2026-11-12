@@ -2,7 +2,7 @@ import type { Job } from '@/api/live';
 import type { AdapterFolder, Checkpoint, PosthocItem, PosthocResults, Project, TrainingConfig, TrainingStatus } from './api';
 export const trainingDefaults: TrainingConfig = {
   adapter_name: '', vram_preset: '24 GB', mode: 'Steps', training_steps: 1000, training_epochs: 20, save_steps: 100, save_epochs: 2, early_stop_enabled: false, early_stop_step: 500,
-  auto_stop_enabled: false, auto_stop_patience_steps: 200, auto_stop_min_delta: .005, auto_stop_watch_interval_steps: 25,
+  auto_stop_enabled: false, auto_stop_patience_steps: 200, auto_stop_min_delta: .005, auto_stop_watch_interval_steps: 25, auto_stop_grace_steps: 200,
   lora_rank: 16, lora_alpha: 32, lora_dropout: .05, learning_rate: .00004, micro_batch: 1, grad_accum: 8, grad_clip: .5, seed: 1234,
   resume_checkpoint: '', eval_enabled: true, eval_text: 'This is an IndexTTS 2.5 training preview.', eval_reference: '', eval_reference_transcript: '', eval_language: 'English', eval_whisper_model: 'sensevoice-small-q8', eval_whisper_language: 'Auto-detect',
   semantic_loss_weight: 0, reference_text_conditioning: false, phonetic_ctc_enabled: false, phonetic_ctc_weight: 0, legacy_phonetic_ctc_enabled: false,
