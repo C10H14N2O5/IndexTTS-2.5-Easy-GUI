@@ -6,7 +6,7 @@
 
 ![IndexTTS 2.5 Easy GUI 切换明暗主题时，毛玻璃扫描带从右向左扫过页面（模拟引擎演示）](<assets/webui-theme-sweep.png>)
 
-[查看中文浅色界面](<assets/webui-2-light.png>) · [查看英文深色界面](<assets/webui-2-dark.png>) · 截图使用隔离的模拟演示数据，不代表真实模型音质。
+[查看中文浅色界面](<assets/webui-2-light.png>) · [查看英文深色界面](<assets/webui-2-dark.png>)。
 
 ## 功能
 
