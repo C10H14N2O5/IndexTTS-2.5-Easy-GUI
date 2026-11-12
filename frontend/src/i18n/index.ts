@@ -7,6 +7,7 @@
  * language (X-UI-Language header / SSE ?lang=) and must NOT be passed to t().
  */
 import { useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 
 export type Language = 'zh_CN' | 'en_US';
 
@@ -35,16 +36,57 @@ export function getLanguage(): Language {
   return language;
 }
 
-export function setLanguage(next: Language): void {
-  if (next === language) return;
-  language = next;
+function canCrossfade(): boolean {
+  return typeof document.startViewTransition === 'function'
+    && document.visibilityState === 'visible'
+    && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+}
+
+let crossfade: ViewTransition | null = null;
+/** The newest requested language; it differs from `language` while a crossfade is pending. */
+let target: Language = language;
+
+/** Makes `target` the current language and re-renders every subscriber. */
+function commitLanguage(sync: boolean): void {
+  language = target;
+  document.documentElement.lang = language === 'zh_CN' ? 'zh-CN' : 'en';
+  const notify = () => listeners.forEach((listener) => listener());
+  if (sync) flushSync(notify);
+  else notify();
+}
+
+/**
+ * Switches the interface language. With `animate`, the old wording dissolves
+ * (fade plus a slight blur, styled in global.css) over the re-rendered page via
+ * a View Transition. The language only changes inside the transition update,
+ * so the old snapshot is captured fully in the old language, and React
+ * re-renders synchronously there so the new snapshot shows the new language.
+ * Without support, or with reduced motion, the text changes at once. A newer
+ * request skips a pending crossfade, whose late update then applies the newest
+ * language.
+ */
+export function setLanguage(next: Language, { animate = false }: { animate?: boolean } = {}): void {
+  if (next === target) return;
+  target = next;
   try {
     localStorage.setItem('indextts.language', next);
   } catch {
     /* ignore */
   }
-  document.documentElement.lang = next === 'zh_CN' ? 'zh-CN' : 'en';
-  listeners.forEach((listener) => listener());
+  crossfade?.skipTransition();
+  if (!animate || !canCrossfade()) {
+    commitLanguage(false);
+    return;
+  }
+  const root = document.documentElement;
+  root.dataset.languageTransition = '';
+  const transition = document.startViewTransition(() => commitLanguage(true));
+  crossfade = transition;
+  void transition.finished.catch(() => undefined).finally(() => {
+    if (crossfade !== transition) return;
+    crossfade = null;
+    delete root.dataset.languageTransition;
+  });
 }
 
 export function subscribeLanguage(listener: () => void): () => void {

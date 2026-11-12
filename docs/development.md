@@ -71,7 +71,7 @@ pnpm --dir frontend dev
 
 侧栏当前项竖条和 `SegmentedControl` 的选中底块使用 `ui/glide.ts` 的 `useGlideIndicator`：读取当前元素的 `offsetLeft`/`offsetTop`/尺寸，写成 CSS 变量，由样式以 `--ease-glide` 过渡（侧栏 `--duration-glide` 450ms，底块 `--duration-thumb` 320ms）。首次定位、容器尺寸变化（侧栏折叠、切换语言）时加 `data-instant` 直接跳到位置，只有选中项变化才滑动。
 
-明暗切换由 `app/theme.ts` 用 View Transitions 实现（仅用于主题，页面切换仍用 `RouteTransition`）：新主题以 `clip-path` 从右向左展开，`.theme-scan` 毛玻璃带以相同时长和曲线（`--duration-theme` 800ms、`--ease-sweep`）跟随分界线，样式在 `styles/global.css`。首次应用、浏览器不支持、页面在后台或减少动态效果时直接切换；新的切换会跳过仍在进行的扫描。下拉框、弹出面板和折叠面板的退出动画依赖 Radix `Presence` 等待 `data-state=closed` 的动画结束后再卸载。
+明暗切换由 `app/theme.ts` 用 View Transitions 实现（仅用于主题，页面切换仍用 `RouteTransition`）：新主题以 `clip-path` 从右向左展开，`.theme-scan` 毛玻璃带以相同时长和曲线（`--duration-theme` 800ms、`--ease-sweep`）跟随分界线，样式在 `styles/global.css`。首次应用、浏览器不支持、页面在后台或减少动态效果时直接切换；新的切换会跳过仍在进行的扫描。语言切换同样使用 View Transitions（`i18n/index.ts` 的 `setLanguage(next, {animate:true})`，只在设置保存成功后由 `useUpdateSettings` 调用）：语言在过渡的更新回调中才生效，并以 `flushSync` 同步重新渲染，因此旧快照完整保留旧文字；旧快照在上层以 `--duration-language` 360ms 淡出并模糊。下拉框、弹出面板、折叠面板、对话框和控制台抽屉的退出动画依赖 Radix `Presence` 等待 `data-state=closed` 的动画结束后再卸载。
 
 ## 安全边界
 

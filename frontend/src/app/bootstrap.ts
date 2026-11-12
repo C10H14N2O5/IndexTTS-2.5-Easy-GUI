@@ -43,7 +43,7 @@ export function useUpdateSettings() {
     // Apply language only after persistence succeeds. An optimistic language
     // switch reconnects SSE before the write and can race its older snapshot.
     onSuccess: (settings) => {
-      setLanguage(settings.ui_language as Language);
+      setLanguage(settings.ui_language as Language, { animate: true });
       useLive.setState({ settings });
       client.setQueryData<Bootstrap>(bootstrapKey, (old) => (old ? { ...old, settings } : old));
     },

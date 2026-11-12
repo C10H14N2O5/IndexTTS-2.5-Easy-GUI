@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from 'react-router';
 import { queryClient } from '@/app/queryClient';
@@ -19,10 +19,15 @@ function Root() {
 
   useEffect(() => startLive(), []);
 
-  // The server setting is authoritative for the interface language.
+  // The server setting is authoritative for the interface language. The saved
+  // value may arrive over SSE before the settings request resolves, so changes
+  // after the first one crossfade here as well.
+  const languageSynced = useRef(false);
   useEffect(() => {
     const language = settings?.ui_language as Language | undefined;
-    if (language && language !== getLanguage()) setLanguage(language);
+    if (!language) return;
+    if (language !== getLanguage()) setLanguage(language, { animate: languageSynced.current });
+    languageSynced.current = true;
   }, [settings?.ui_language]);
 
   // After a reconnect (e.g. the server restarted) refresh everything cached.

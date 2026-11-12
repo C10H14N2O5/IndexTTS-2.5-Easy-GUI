@@ -75,6 +75,9 @@
   --ease-sweep: cubic-bezier(0.65, 0, 0.35, 1);
   --duration-theme: 800ms;
   --theme-scan-width: 180px;
+  /* Language switch: the old wording fades out with a slight blur. */
+  --duration-language: 360ms;
+  --language-blur: 6px;
 
   /* State layer opacities */
   --state-hover: 8%;
@@ -153,6 +156,7 @@
     --duration-glide: 0ms;
     --duration-thumb: 0ms;
     --duration-theme: 0ms;
+    --duration-language: 0ms;
     --page-shift: 0px;
   }
 }

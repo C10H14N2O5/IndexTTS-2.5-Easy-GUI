@@ -128,6 +128,33 @@ html[data-theme-transition]::view-transition-new(theme-scan) {
       transparent);
 }
 
+/*
+ * Language crossfade (i18n/index.ts). The new page sits still underneath while
+ * the old wording fades out on top with a slight blur, so unchanged parts of
+ * the page stay steady and only the text appears to dissolve into its
+ * translation.
+ */
+html[data-language-transition]::view-transition-new(root) {
+  animation: none;
+}
+
+html[data-language-transition]::view-transition-old(root) {
+  z-index: 1;
+  mix-blend-mode: normal;
+  animation: language-out var(--duration-language) var(--ease-standard) both;
+}
+
+@keyframes language-out {
+  from {
+    opacity: 1;
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--language-blur));
+  }
+}
+
 @keyframes theme-reveal {
   from {
     clip-path: inset(0 0 0 calc(100% + var(--theme-scan-width) / 2));
