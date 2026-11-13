@@ -214,6 +214,56 @@ class ValidationGuiTests(GuiApiTestCase):
         self.assertEqual(self.put_validation(interval_steps=3).status_code, 200)
         self.assertEqual(load_project('demo', paths.TRAINING_DIR)['validation']['dense_start_step'], 100)
 
+    def test_include_baseline_defaults_off_and_roundtrips(self):
+        self.assertIs(self.client.get('/api/projects/demo').json()['validation']['include_baseline'], False)
+        directory = self.make_validation()
+        for value in (True, False, True):
+            with self.subTest(include_baseline=value):
+                response = self.put_validation(include_baseline=value)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIs(response.json()['validation']['include_baseline'], value)
+                self.assertIs(self.client.get('/api/projects/demo').json()['validation']['include_baseline'], value)
+                self.assertIs(load_project('demo', paths.TRAINING_DIR)['validation']['include_baseline'], value)
+        # Unrelated validation updates keep the saved choice.
+        response = self.put_validation(source_folder=str(directory), interval_steps=5)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIs(response.json()['validation']['include_baseline'], True)
+        saved = load_project('demo', paths.TRAINING_DIR)
+        self.assertEqual(self.put_validation(include_baseline='maybe').status_code, 400)
+        self.assertEqual(load_project('demo', paths.TRAINING_DIR), saved)
+
+    def test_validation_preflight_reports_include_baseline(self):
+        from indextts_training import dataset
+        directory = self.make_validation()
+        response = self.put_validation(source_folder=str(directory), enabled=True, prepare=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        snapshot = dataset.validate_validation_manifest('demo', self.manifest, paths.TRAINING_DIR)
+        self.assertIs(snapshot['include_baseline'], False)
+        self.assertEqual(self.put_validation(include_baseline=True).status_code, 200)
+        snapshot = dataset.validate_validation_manifest('demo', self.manifest, paths.TRAINING_DIR)
+        self.assertIs(snapshot['include_baseline'], True)
+        self.assertEqual(len(snapshot['rows']), 1)
+        self.assertIsNone(dataset.validate_validation_manifest('demo', self.manifest, paths.TRAINING_DIR,
+                                                               enabled=False))
+
+    def test_include_baseline_is_passed_to_the_trainer(self):
+        captures = []
+        def tiny_trainer(config, callback, stop_event):
+            captures.append(config)
+            callback(step=1, total=1, epoch=1, loss=.5)
+            return {'output': '', 'stopped': False}
+        self.state.training.train_fn = tiny_trainer
+        directory = self.make_validation()
+        response = self.put_validation(source_folder=str(directory), enabled=True, prepare=True, include_baseline=True)
+        self.assertEqual(response.status_code, 200, response.text)
+        started = self.client.post('/api/training/start', json={'project': 'demo'})
+        self.assertEqual(started.status_code, 202, started.text)
+        self.wait_until(lambda: not self.state.training.snapshot()['running'])
+        self.state.training.thread.join(10)
+        self.assertIs(captures[-1]['validation']['include_baseline'], True)
+        saved = json.loads((paths.TRAINING_OUTPUTS_DIR / 'demo/training_config.json').read_text(encoding='utf-8'))
+        self.assertIs(saved['validation']['include_baseline'], True)
+
     def test_dense_range_is_passed_to_the_trainer(self):
         captures = []
         def tiny_trainer(config, callback, stop_event):

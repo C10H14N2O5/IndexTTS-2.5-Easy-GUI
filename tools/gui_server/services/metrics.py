@@ -38,8 +38,7 @@ def read(name: str, adapter: str | None = None, max_points: int = 2000) -> dict:
     result = dict(project=name, adapter=root.name, logdir=str(logdir), series=[], available=False, error=None)
     _read_events(logdir, result, max_points)
     from . import posthoc
-    extra = posthoc.series(name, root)
-    if extra is not None:
+    for extra in posthoc.series(name, root):
         result["series"].append({**extra, "points": sample_points(extra["points"], max_points)})
         result["available"] = True
     return result

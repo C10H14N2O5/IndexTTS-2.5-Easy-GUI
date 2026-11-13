@@ -51,6 +51,7 @@
   "Training and validation contain the same audio: {0} and {1}",
   "Running validation at step {0}…",
   "Validation loss at step {0}: {1}",
+  "Base model validation loss: {0}",
   "Validation failed at step {0} for {1}: {2}",
   "Validation failed at step {0}; checkpoint save also failed: {1}",
   "Non-finite validation loss: {0}"

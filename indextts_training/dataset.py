@@ -78,7 +78,8 @@ def _project_file(name, root):
 def validation_settings(project):
     saved = project.get('validation')
     defaults = dict(source_folder='', manifest='', stats={}, enabled=False, interval_steps=None,
-                    dense_enabled=False, dense_start_step=None, dense_end_step=None, dense_interval_steps=None)
+                    dense_enabled=False, dense_start_step=None, dense_end_step=None, dense_interval_steps=None,
+                    include_baseline=False)
     return {**defaults, **saved} if isinstance(saved, dict) else defaults
 
 
@@ -132,7 +133,8 @@ def normalize_validation_interval(value):
 @project_transaction
 def configure_validation(project, *, source_folder=_UNSET, enabled=_UNSET,
                          interval_steps=_UNSET, dense_enabled=_UNSET, dense_start_step=_UNSET,
-                         dense_end_step=_UNSET, dense_interval_steps=_UNSET, root='training'):
+                         dense_end_step=_UNSET, dense_interval_steps=_UNSET, include_baseline=_UNSET,
+                         root='training'):
     """Save validation options without rewriting either manifest."""
     meta = load_project(project, root)
     if not meta:
@@ -148,6 +150,8 @@ def configure_validation(project, *, source_folder=_UNSET, enabled=_UNSET,
         settings['enabled'] = bool(enabled)
     if interval_steps is not _UNSET:
         settings['interval_steps'] = normalize_validation_interval(interval_steps)
+    if include_baseline is not _UNSET:
+        settings['include_baseline'] = bool(include_baseline)
     dense = dict(dense_enabled=dense_enabled, dense_start_step=dense_start_step,
                  dense_end_step=dense_end_step, dense_interval_steps=dense_interval_steps)
     if any(value is not _UNSET for value in dense.values()):
@@ -449,7 +453,8 @@ def validate_validation_manifest(project, training_manifest, root='training', *,
             _check_validation_overlap(training_rows, rows)
             return dict(rows=rows, fingerprint=fingerprint, interval_steps=interval, manifest=status['manifest'],
                         training_fingerprint=hashlib.sha256(training_raw).hexdigest(),
-                        dense=dense_validation(settings))
+                        dense=dense_validation(settings),
+                        include_baseline=bool(settings.get('include_baseline')))
 
 
 def list_projects(root='training'):

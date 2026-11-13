@@ -53,6 +53,8 @@ export function warmupSteps(planned: number) { return Math.max(20, Math.min(100,
 export function checkpointStep(path: string, checkpoints?: Checkpoint[]) { const known = checkpoints?.find(item => item.path === path)?.step; if (known != null) return known; const suffix = path.split(/[\\/]/).filter(Boolean).pop()?.split('-').pop() ?? ''; return /^\d+$/.test(suffix) ? Number(suffix) : null; }
 export function useStopTraining() { return useMutation({ mutationFn: () => api.post<TrainingStatus>('/api/training/stop'), onSuccess: data => applyEvent('training', data) }); }
 export type AutoStopStatus = Schemas['AutoStopStatus'];
+/** One-point metrics series holding the base model's (no adapter) validation loss; drawn as a reference line. */
+export const BASELINE_SERIES = 'validation_baseline/loss';
 /** Series for a learning-curve view; auto-stop bookkeeping series never mix into the loss charts. */
-export function curveSeries<T extends { label: string }>(series: T[], view: string) { return series.filter(({ label }) => !label.startsWith('auto_stop/') && (view === 'loss' ? ['train/loss_ema', 'validation/loss', 'validation_posthoc/loss'].includes(label) : view === 'raw' ? label.includes('loss') && !label.includes('ema') && !label.startsWith('validation') : label === 'train/lr')); }
+export function curveSeries<T extends { label: string }>(series: T[], view: string) { return series.filter(({ label }) => !label.startsWith('auto_stop/') && (view === 'loss' ? ['train/loss_ema', 'validation/loss', 'validation_posthoc/loss', BASELINE_SERIES].includes(label) : view === 'raw' ? label.includes('loss') && !label.includes('ema') && !label.startsWith('validation') : label === 'train/lr')); }
 export function stat(values: Record<string, unknown> | undefined, key: string) { const value = Number(values?.[key] ?? 0); return Number.isFinite(value) ? value : 0; }

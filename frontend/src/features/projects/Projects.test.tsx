@@ -166,6 +166,12 @@ describe('early stop and dense validation', () => {
     await waitFor(() => expect(requests((url, init) => url.endsWith('/validation') && init?.method === 'PUT')).toHaveLength(1));
     expect(JSON.parse(String(requests((url, init) => url.endsWith('/validation') && init?.method === 'PUT')[0]?.[1]?.body))).toMatchObject({ dense_enabled: true, dense_start_step: 300, dense_end_step: 500, dense_interval_steps: 25, prepare: false });
   });
+  it('saves the base-model validation option', async () => {
+    mount('/projects/voice/validation'); const toggle = await screen.findByRole('switch', { name: 'Include base model (no adapter)' }); expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle); await userEvent.click(screen.getByRole('button', { name: 'Save validation' }));
+    await waitFor(() => expect(requests((url, init) => url.endsWith('/validation') && init?.method === 'PUT')).toHaveLength(1));
+    expect(JSON.parse(String(requests((url, init) => url.endsWith('/validation') && init?.method === 'PUT')[0]?.[1]?.body))).toMatchObject({ include_baseline: true, prepare: false });
+  });
 });
 
 describe('post-hoc validation loss', () => {
@@ -197,6 +203,19 @@ describe('post-hoc validation loss', () => {
     const before = requests(url => url.includes('/validation-results')).length;
     act(() => applyEvent('job', { ...posthocJob, state: 'succeeded', progress: 1, finished_at: Date.now() / 1000 }));
     await waitFor(() => expect(requests(url => url.includes('/validation-results')).length).toBeGreaterThan(before)); expect(screen.getByText('Computing validation loss.')).toBeInTheDocument();
+  });
+  it('charts training-time validation loss even without post-hoc results', async () => {
+    metricSeries = [{ label: 'validation/loss', points: [[100, 1.3], [200, 1.2]], count: 2 }]; mount('/projects/voice/outputs');
+    const chart = await screen.findByRole('img', { name: /Validation loss \(during training\)/ }); expect(chart.getAttribute('aria-label')).not.toContain('Base model (no adapter)');
+  });
+  it('adds the base model as a reference line to the chart', async () => {
+    metricSeries = [{ label: 'validation/loss', points: [[100, 1.3], [200, 1.2]], count: 2 }, { label: 'validation_baseline/loss', points: [[0, 2.5]], count: 1 }]; mount('/projects/voice/outputs');
+    expect((await screen.findByRole('img', { name: /Validation loss \(during training\)/ })).getAttribute('aria-label')).toContain('Base model (no adapter)');
+  });
+  it('does not chart the base model alone', async () => {
+    metricSeries = [{ label: 'validation_baseline/loss', points: [[0, 2.5]], count: 1 }]; mount('/projects/voice/outputs'); await screen.findByText('1.2346');
+    await waitFor(() => expect(client.getQueryCache().findAll({ queryKey: ['metrics'] }).map(query => query.state.status)).toEqual(['success'])); await act(async () => {});
+    expect(screen.queryByRole('img', { name: /Base model|Validation loss/ })).not.toBeInTheDocument();
   });
 });
 
@@ -272,9 +291,9 @@ describe('auto stop', () => {
     act(() => applyEvent('training', { ...idleTraining, status: 'stopped', stopped: true, project: 'voice', adapter: 'voice', step: 150, total: 1000, auto_stop: normal })); expect(screen.queryByText(line)).not.toBeInTheDocument();
   });
   it('keeps auto stop series out of the learning curves', async () => {
-    const labels = ['train/loss', 'train/loss_ema', 'train/lr', 'validation/loss', 'auto_stop/best_loss', 'auto_stop/valley_loss', 'auto_stop/watching'];
+    const labels = ['train/loss', 'train/loss_ema', 'train/lr', 'validation/loss', 'validation_baseline/loss', 'auto_stop/best_loss', 'auto_stop/valley_loss', 'auto_stop/watching'];
     const pick = (view: string) => curveSeries(labels.map(label => ({ label })), view).map(item => item.label);
-    expect(pick('loss')).toEqual(['train/loss_ema', 'validation/loss']); expect(pick('raw')).toEqual(['train/loss']); expect(pick('lr')).toEqual(['train/lr']);
+    expect(pick('loss')).toEqual(['train/loss_ema', 'validation/loss', 'validation_baseline/loss']); expect(pick('raw')).toEqual(['train/loss']); expect(pick('lr')).toEqual(['train/lr']);
     metricSeries = labels.map(label => ({ label, points: [[100, 1]], count: 1 })); useLive.setState({ training: { ...idleTraining, running: true, status: 'running', project: 'voice', adapter: 'voice', step: 100, total: 1000 } }); mount();
     await userEvent.click(await screen.findByRole('radio', { name: 'Raw loss' })); expect((await screen.findByRole('img', { name: /train\/loss/ })).getAttribute('aria-label')).not.toContain('auto_stop');
   });

@@ -55,6 +55,7 @@ class ValidationPatch(ApiModel):
     dense_start_step: int | None = Field(None, ge=1)
     dense_end_step: int | None = Field(None, ge=1)
     dense_interval_steps: int | None = Field(None, ge=1)
+    include_baseline: bool | None = None
     prepare: bool = False
 
 

@@ -98,6 +98,7 @@ class ValidationConfig(OpenModel):
     dense_start_step: int | None = None
     dense_end_step: int | None = None
     dense_interval_steps: int | None = None
+    include_baseline: bool = False
 
 
 class ProjectInfo(OpenModel):
@@ -240,7 +241,7 @@ def update_validation(name: str, patch: dict) -> dict:
         load_raw(name)
         values = {k: v for k, v in patch.items() if k in {
             "enabled", "interval_steps", "source_folder", "dense_enabled", "dense_start_step", "dense_end_step",
-            "dense_interval_steps"}}
+            "dense_interval_steps", "include_baseline"}}
         if "source_folder" in values:
             requested = str(values["source_folder"] or "").strip()
             suggested = paths.VALIDATION_DIR / name

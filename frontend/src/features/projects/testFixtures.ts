@@ -11,7 +11,7 @@ export const trainingDefaults: TrainingConfig = {
 export function projectFixture(): Project { return {
   project_name: 'voice', source_folder: 'D:/corpus', manifest: 'D:/prepared/manifest.jsonl', language: 'ZH', modified: 1234567890,
   training: { ...trainingDefaults, adapter_name: 'voice' }, stats: { valid: 12, total_seconds: 60 },
-  validation: { source_folder: '', manifest: '', enabled: false, interval_steps: null, dense_enabled: false, dense_start_step: null, dense_end_step: null, dense_interval_steps: null, stats: {} }, validation_suggested_folder: 'D:/validation/voice',
+  validation: { source_folder: '', manifest: '', enabled: false, interval_steps: null, dense_enabled: false, dense_start_step: null, dense_end_step: null, dense_interval_steps: null, include_baseline: false, stats: {} }, validation_suggested_folder: 'D:/validation/voice',
   dataset_status: { stale: false, managed: true, manifest: 'D:/prepared/manifest.jsonl', status: 'ready', message: 'Training manifest is up to date.', stats: {} },
   validation_status: { stale: true, managed: false, manifest: '', status: 'missing', message: 'Validation manifest is missing.', stats: {} },
 }; }

@@ -710,3 +710,209 @@ def test_stop_during_validation_does_not_observe(training):
     assert result['auto_stop']['best_step'] is None
     assert not (training.out / 'best_adapter').exists()
     assert auto_stop_snapshots(training) == []
+
+
+# ---------------------------------------------------------- base model baseline
+
+BASELINE_RUNNING = 'Running validation for the base model (no adapter)…'
+BASELINE_RECORDED = 'Base model validation loss is already recorded for this validation set.'
+
+
+def install_disable_adapter(training):
+    """Give the fake PEFT model ``disable_adapter`` and record every validation call."""
+    events = []
+    training.adapter.disabled = False
+
+    @contextmanager
+    def disable_adapter():
+        # The adapter is in training mode; _validation_loss switches to eval itself.
+        assert training.adapter.training and training.flags.grad
+        assert not training.adapter.disabled
+        events.append(('enter', training.optimizer.step.call_count, training.optimizer.load_state_dict.called,
+                       len(training.samples)))
+        training.adapter.disabled = True
+        try:
+            yield
+        finally:
+            training.adapter.disabled = False
+            events.append(('exit', training.adapter.training, len(training.samples)))
+
+    training.adapter.disable_adapter = disable_adapter
+    calls = []
+    inner = training.trainer._validation_loss
+
+    def recording(tts, rows, device, step, *args, **kwargs):
+        calls.append((step, training.adapter.disabled, training.optimizer.step.call_count))
+        return inner(tts, rows, device, step, *args, **kwargs)
+
+    training.trainer._validation_loss = recording
+    return SimpleNamespace(events=events, calls=calls)
+
+
+def enable_baseline(training, value=True):
+    training.config['validation']['include_baseline'] = value
+    return install_disable_adapter(training)
+
+
+def stored_results(training):
+    from indextts_training import validation_results
+    return validation_results.load(training.out)
+
+
+def results_file(training):
+    return training.out / 'validation_posthoc.json'
+
+
+def scalar_steps(writer):
+    return sorted({step for _, _, step in (record.args for record in writer.add_scalar.call_args_list)})
+
+
+def test_include_baseline_validates_base_model_before_training(training, tmp_path):
+    tracked = enable_baseline(training)
+    before = time.time()
+    result = training.run()
+    assert result['step'] == 4 and not result['stopped']
+    # The first validation is the base model at step 0, with the adapter disabled
+    # and before any optimizer step or training sample.
+    assert tracked.calls == [(0, True, 0), (2, False, 2), (4, False, 4)]
+    assert tracked.events == [('enter', 0, False, 0), ('exit', True, 2)]
+    assert training.samples == [
+        ('first.wav', 0), ('second.wav', 0),
+        ('training.wav', 0), ('training.wav', 1), ('first.wav', 2), ('second.wav', 2),
+        ('training.wav', 2), ('training.wav', 3), ('first.wav', 4), ('second.wav', 4),
+    ]
+    assert training.optimizer.step.call_count == 4
+    [entry] = stored_results(training)
+    assert entry.pop('computed_at') >= before
+    assert entry == {'name': 'base_model', 'step': 0, 'loss': 3.0, 'validation_fingerprint': 'a' * 64,
+                     'samples': 2, 'model_dir': str(tmp_path), 'same_as': None, 'weights': None,
+                     'source': 'training'}
+    text = messages(training)
+    assert text.index(BASELINE_RUNNING) < text.index('Base model validation loss: 3.000000') < text.index(
+        'Validation loss at step 2: 3.000000')
+    assert BASELINE_RECORDED not in text
+    # The baseline is not part of the TensorBoard training log.
+    assert validation_points(training.writer) == [(2, 3.0), (4, 3.0)]
+    assert 0 not in scalar_steps(training.writer)
+    assert training.adapter.training and training.flags.grad and not training.adapter.disabled
+
+
+def test_existing_baseline_for_the_same_validation_set_is_reused(training):
+    from indextts_training import validation_results
+    tracked = enable_baseline(training)
+    validation_results.record_baseline(training.out, loss=9.5, fingerprint='a' * 64, samples=2, model_dir='earlier')
+    stored = stored_results(training)
+    result = training.run()
+    assert result['step'] == 4
+    assert tracked.events == []
+    assert [step for step, _, _ in tracked.calls] == [2, 4]
+    assert training.samples[0] == ('training.wav', 0)
+    assert stored_results(training) == stored
+    text = messages(training)
+    assert BASELINE_RECORDED in text and BASELINE_RUNNING not in text
+    assert not any(item.startswith('Base model validation loss:') for item in text)
+
+
+def test_baseline_is_recomputed_for_a_changed_validation_set(training):
+    from indextts_training import validation_results
+    tracked = enable_baseline(training)
+    validation_results.record_baseline(training.out, loss=9.5, fingerprint='b' * 64, samples=5, model_dir='earlier')
+    training.run()
+    assert tracked.calls[0] == (0, True, 0)
+    assert BASELINE_RUNNING in messages(training)
+    entries = sorted((item['validation_fingerprint'], item['loss'], item['samples']) for item in stored_results(training))
+    assert entries == [('a' * 64, 3.0, 2), ('b' * 64, 9.5, 5)]
+    assert validation_results.has_baseline(training.out, 'a' * 64)
+
+
+def test_auto_stop_does_not_observe_the_baseline(training):
+    tracked = enable_baseline(training)
+    enable_auto_stop(training)
+    training.validation_losses[0] = 0.5  # far better than any adapter result
+    result = training.run()
+    assert tracked.calls[0] == (0, True, 0)
+    assert stored_results(training)[0]['loss'] == 0.5
+    # Identical to the run without a baseline.
+    assert validation_points(training.writer) == [(4, 3.0), (8, 2.5), (12, 2.45), (14, 2.6), (15, 2.7)]
+    assert scalar_points(training.writer, 'auto_stop/best_loss')[0] == (4, 3.0)
+    assert result['auto_stopped'] and result['step'] == 15
+    assert (result['best_step'], result['best_loss']) == (12, 2.45)
+    assert result['best_step'] != 0
+    assert saved_paths(training)[:2] == ['best_adapter', 'checkpoint-step-000004']
+    assert adapter_state(training.out / 'best_adapter')['step'] == 12
+    assert 'Saved best adapter at step 0' not in ' '.join(messages(training))
+    assert auto_stop_snapshots(training)[0]['best_step'] == 4
+
+
+def test_stop_during_baseline_records_nothing_and_does_not_train(training):
+    tracked = enable_baseline(training)
+    training.config['validation']['rows'][0]['stop'] = True
+    result = training.run()
+    assert result['stopped'] and result['step'] == 0
+    assert tracked.calls == [(0, True, 0)]
+    assert tracked.events == [('enter', 0, False, 0), ('exit', True, 1)]
+    assert training.samples == [('first.wav', 0)]
+    assert training.optimizer.step.call_count == training.backward.call_count == 0
+    assert not results_file(training).exists()
+    assert not any(item.startswith('Base model validation loss:') for item in messages(training))
+    assert validation_points(training.writer) == []
+    assert training.adapter.training and not training.adapter.disabled
+
+
+def test_stop_requested_before_start_skips_baseline(training):
+    tracked = enable_baseline(training)
+    training.stop.set()
+    result = training.run()
+    assert result['stopped'] and result['step'] == 0
+    assert tracked.events == [] and tracked.calls == []
+    assert BASELINE_RUNNING not in messages(training)
+    assert not results_file(training).exists()
+
+
+def test_failed_baseline_validation_aborts_before_training(training):
+    tracked = enable_baseline(training)
+    training.config['validation']['rows'][1]['broken'] = True
+    with pytest.raises(RuntimeError, match=r'Validation failed at step 0 for second\.wav: cannot decode clip'):
+        training.run()
+    assert tracked.events == [('enter', 0, False, 0), ('exit', True, 1)]
+    assert training.optimizer.step.call_count == 0
+    assert not results_file(training).exists()
+    assert not list(training.out.glob('checkpoint-step-*'))
+    assert training.adapter.training and not training.adapter.disabled
+
+
+def test_resume_computes_a_missing_baseline(training, tmp_path):
+    tracked = enable_baseline(training)
+    training.config.update(resume=str(make_resume(tmp_path, 3)), steps=6)
+    training.config['validation']['interval_steps'] = 2
+    training.run()
+    # Measured after the checkpoint state was loaded, before the first resumed step.
+    assert tracked.events[0] == ('enter', 0, True, 0)
+    assert tracked.calls == [(0, True, 0), (4, False, 1), (6, False, 3)]
+    assert validation_points(training.writer) == [(4, 3.0), (6, 3.0)]
+    training.writer_factory.assert_called_once_with(str(training.out / 'tensorboard'), purge_step=4)
+    [entry] = stored_results(training)
+    assert (entry['name'], entry['step'], entry['loss'], entry['source']) == ('base_model', 0, 3.0, 'training')
+
+
+@pytest.mark.parametrize('value', [None, False])
+def test_without_include_baseline_nothing_changes(training, value):
+    if value is None:
+        tracked = install_disable_adapter(training)
+    else:
+        tracked = enable_baseline(training, value)
+    training.run()
+    assert tracked.events == []
+    assert [step for step, _, _ in tracked.calls] == [2, 4]
+    assert not results_file(training).exists()
+    text = messages(training)
+    assert BASELINE_RUNNING not in text and BASELINE_RECORDED not in text
+    assert training.samples[0] == ('training.wav', 0)
+
+
+def test_baseline_needs_validation_rows(training):
+    training.config.pop('validation')
+    tracked = install_disable_adapter(training)
+    assert training.run()['step'] == 4
+    assert tracked.events == [] and tracked.calls == []
+    assert not results_file(training).exists()

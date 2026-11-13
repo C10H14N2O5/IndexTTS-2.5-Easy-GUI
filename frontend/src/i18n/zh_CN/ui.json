@@ -63,5 +63,6 @@
   "Step": "步数",
   "Metrics will appear after the first training step.": "完成首个训练步骤后将显示指标。",
   "The chart updates while training runs.": "图表会在训练过程中实时更新。",
-  "The chart could not be rendered. Open TensorBoard for detailed metrics.": "无法绘制图表，请打开 TensorBoard 查看详细指标。"
+  "The chart could not be rendered. Open TensorBoard for detailed metrics.": "无法绘制图表，请打开 TensorBoard 查看详细指标。",
+  "{0} (step {1})": "{0}（第 {1} 步）"
 }

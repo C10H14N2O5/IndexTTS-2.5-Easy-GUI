@@ -12,6 +12,7 @@ from indextts_training.schedule import (
     checkpoint_due as _checkpoint_due, validation_due as _validation_due, write_adapter_state,
 )
 from indextts_training.auto_stop import monitor_from_config
+from indextts_training import validation_results
 
 
 PHONETIC_BLANK = 0
@@ -718,6 +719,20 @@ def train_lora(config, callback, stop_event):
         write_adapter_state(directory, saved_step, total, end_step, stop_event.is_set(), extra)
 
     auto_stopped = False
+
+    # Optional base-model reference on the same validation set, stored with the
+    # post-hoc results so the outputs page can compare checkpoints against it.
+    if validation_rows and validation.get('include_baseline') and not stop_event.is_set():
+        if validation_results.has_baseline(out, validation['fingerprint']):
+            callback(message='Base model validation loss is already recorded for this validation set.')
+        else:
+            callback(message='Running validation for the base model (no adapter)…')
+            with tts.gpt.gpt.disable_adapter():
+                baseline_loss = _validation_loss(tts, validation_rows, device, 0, stop_event)
+            if baseline_loss is not None:
+                validation_results.record_baseline(out, loss=baseline_loss, fingerprint=validation['fingerprint'],
+                                                   samples=len(validation_rows), model_dir=str(model_dir))
+                callback(message=f'Base model validation loss: {baseline_loss:.6f}')
 
     # A resume from an earlier checkpoint can replay previously logged steps.
     # Retain the checkpoint's metrics and hide later events before appending.

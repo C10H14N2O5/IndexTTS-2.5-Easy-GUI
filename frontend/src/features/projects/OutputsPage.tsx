@@ -8,7 +8,7 @@ import { useT } from '@/i18n';
 import { AudioPlayer, Badge, Button, Checkbox, EmptyState, Field, InlineAlert, LineChart, Section, Select, Skeleton, Switch, formatRelativeTime } from '@/ui';
 import { useTrackedJob } from '@/features/synthesis/api';
 import { JobCard } from '@/features/synthesis/JobCard';
-import { projectRoute, useAdapters, useCheckpoints, useMetrics, useProjectContext, useStartValidationRun, useTrainingStatus, useValidationResults, type PosthocItem } from './api';
+import { BASELINE_SERIES, projectRoute, useAdapters, useCheckpoints, useMetrics, useProjectContext, useStartValidationRun, useTrainingStatus, useValidationResults, type PosthocItem } from './api';
 import s from './Workbench.module.css';
 
 const BASELINE = 'base_model';
@@ -36,7 +36,12 @@ function AdapterOutputs({ project, adapter, own, selector }: { project: string; 
   const posthoc = results.data?.items ?? []; const validation = results.data?.validation; const base = resultFor(posthoc, BASELINE);
   const during = new Map(((metrics.data?.series?.find(item => item.label === 'validation/loss')?.points ?? []) as [number, number][]).map(([x, y]) => [x, y]));
   const missing = items.filter(item => resultFor(posthoc, item.name)?.status !== 'current').map(item => item.name);
-  const chart = useMemo(() => (metrics.data?.series ?? []).filter(item => item.label === 'validation/loss' || item.label === 'validation_posthoc/loss').map(item => ({ label: item.label === 'validation/loss' ? t('Validation loss (during training)') : t('Validation loss (post-hoc)'), points: item.points as [number, number][] })), [metrics.data, t]);
+  const chart = useMemo(() => {
+    const labels = new Map([['validation/loss', t('Validation loss (during training)')], ['validation_posthoc/loss', t('Validation loss (post-hoc)')], [BASELINE_SERIES, t('Base model (no adapter)')]]);
+    return (metrics.data?.series ?? []).flatMap(item => { const label = labels.get(item.label); return label ? [{ label, points: item.points as [number, number][], reference: item.label === BASELINE_SERIES }] : []; });
+  }, [metrics.data, t]);
+  /** The base-model line is only a reference, so it alone does not warrant a chart. */
+  const plotted = metrics.data?.series?.some(item => (item.label === 'validation/loss' || item.label === 'validation_posthoc/loss') && item.points.length > 0);
   const mismatch = Boolean(results.data?.training_fingerprint && validation?.fingerprint && results.data.training_fingerprint !== validation.fingerprint);
   const busy = training ? t('Stop training before computing validation loss.') : exporting ? t('Wait for checkpoint export to finish.') : gpu ? t('The GPU is busy: {0}', gpu.title) : undefined;
   const computeReason = busy ?? (results.isPending ? t('Loading validation results…') : !validation ? t('Validation results are unavailable.') : !validation.ready ? t('Prepare the validation set first.') : !selected.length && !baseline ? t('Select checkpoints or include the base model.') : undefined);
@@ -55,13 +60,13 @@ function AdapterOutputs({ project, adapter, own, selector }: { project: string; 
       {results.error && <InlineAlert tone="error">{errorMessage(results.error)}</InlineAlert>}
       {validation && <InlineAlert tone={validation.ready ? 'success' : 'warning'} title={validation.message} action={!validation.ready && <Link to="../validation" className={s.linkButton}>{t('Configure validation')}</Link>}>{validation.ready && t('{0} clips · fingerprint {1}', validation.samples, (validation.fingerprint ?? '').slice(0, 8))}</InlineAlert>}
       {mismatch && <InlineAlert tone="warning">{t('The adapter was trained with a different validation set, so its training-time curve is not directly comparable.')}</InlineAlert>}
-      <div className={s.two}><Switch checked={baseline} onCheckedChange={setBaseline} label={t('Include base model (no adapter)')} description={t('A reference point at step 0.')}/><Switch checked={recompute} onCheckedChange={setRecompute} label={t('Recompute existing results')} description={t('Otherwise items with a current result are skipped.')}/></div>
+      <div className={s.two}><Switch checked={baseline} onCheckedChange={setBaseline} label={t('Include base model (no adapter)')} description={t('Drawn as a dashed reference line on the chart.')}/><Switch checked={recompute} onCheckedChange={setRecompute} label={t('Recompute existing results')} description={t('Otherwise items with a current result are skipped.')}/></div>
       <div className={s.toolbar}><div className={s.actions}><Button variant="outlined" icon={ListChecks} disabledReason={!missing.length ? t('Every checkpoint already has a current result.') : undefined} onClick={() => setSelected(missing)}>{t('Select missing')}</Button><span className={s.muted}>{t('{0} selected', selected.length)}</span></div><Button icon={Calculator} pending={run.isPending} disabledReason={computeReason} onClick={compute}>{t('Compute selected')}</Button></div>
       {computeReason && !results.isPending && <p className={s.muted}>{computeReason}</p>}
       {[run.error, tracked.error].filter(Boolean).map((error, index) => <InlineAlert key={index} tone="error">{errorMessage(error)}</InlineAlert>)}
       {job && <JobCard job={job}/>}
       {posthoc.some(item => item.status === 'outdated') && <p className={s.muted}>{t('Outdated results were computed on a different validation set or before the adapter files changed. Recompute them for a fair comparison.')}</p>}
-      {metrics.data?.series?.some(item => item.label === 'validation_posthoc/loss' && item.points.length > 0) && <LineChart series={chart} height={220} xLabel={t('Step')}/>}
+      {plotted && <LineChart series={chart} height={220} xLabel={t('Step')}/>}
       {metrics.error && <InlineAlert tone="error">{errorMessage(metrics.error)}</InlineAlert>}
     </div>
   </Section>}

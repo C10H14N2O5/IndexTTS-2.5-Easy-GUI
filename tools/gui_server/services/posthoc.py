@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import time
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
-from indextts_training import dataset
+from indextts_training import dataset, validation_results
 from indextts_training.schedule import read_adapter_state
+from indextts_training.validation_results import BASELINE, RESULTS_FILE  # noqa: F401 - re-exported
 from .. import paths
 from ..errors import Busy, NotFound, ServiceError
 from ..i18n import msg, raw
@@ -25,11 +25,9 @@ from ..schemas import ApiModel
 from ..state import current
 from . import engine, projects
 
-RESULTS_FILE = "validation_posthoc.json"
-BASELINE = "base_model"
 TENSORBOARD_RUN = "posthoc"
 SERIES_LABEL = "validation_posthoc/loss"
-_LOCK = threading.RLock()
+BASELINE_SERIES_LABEL = "validation_baseline/loss"
 
 
 class ValidationRunRequest(ApiModel):
@@ -93,28 +91,8 @@ def _sha256(folder: Path) -> str | None:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _load(root: Path) -> list[dict]:
-    try:
-        data = json.loads((root / RESULTS_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    entries = data.get("entries") if isinstance(data, dict) else None
-    return [entry for entry in entries or [] if isinstance(entry, dict) and "name" in entry and "loss" in entry]
-
-
-def _save(root: Path, entries: list[dict]) -> None:
-    payload = {"version": 1, "entries": sorted(entries, key=lambda item: (
-        item.get("validation_fingerprint", ""), item["name"] != BASELINE, item.get("step") is None,
-        item.get("step") or 0, item["name"]))}
-    dataset._atomic_write(root / RESULTS_FILE, json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"))
-
-
-def _upsert(root: Path, entry: dict) -> None:
-    with _LOCK:
-        entries = [item for item in _load(root) if not (
-            item["name"] == entry["name"] and item.get("validation_fingerprint") == entry["validation_fingerprint"])]
-        entries.append(entry)
-        _save(root, entries)
+_load = validation_results.load
+_upsert = validation_results.upsert
 
 
 def _training_fingerprint(root: Path) -> str | None:
@@ -154,11 +132,14 @@ def _items(root: Path, fingerprint: str | None) -> list[dict]:
     return result
 
 
-def _points(items: list[dict]) -> list[tuple[int, float]]:
-    """Current results by step; a checkpoint wins over a final/best adapter at the same step."""
+def _points(items: list[dict], *, baseline: bool = True) -> list[tuple[int, float]]:
+    """Current results by step; a checkpoint wins over a final/best adapter at the same step.
+
+    The baseline is step 0 when ``baseline`` is true (the TensorBoard run keeps it there).
+    """
     by_step: dict[int, tuple[int, float]] = {}
     for item in items:
-        if item["status"] != "current" or item["step"] is None:
+        if item["status"] != "current" or item["step"] is None or (not baseline and item["kind"] == "baseline"):
             continue
         rank = 0 if item["kind"] in ("final", "best") else 1
         step = int(item["step"])
@@ -167,10 +148,22 @@ def _points(items: list[dict]) -> list[tuple[int, float]]:
     return sorted((step, value) for step, (_, value) in by_step.items())
 
 
-def series(name: str, root: Path) -> dict | None:
-    """Chart series for :mod:`metrics` (baseline is drawn at step 0)."""
-    points = _points(_items(root, _current_fingerprint(name)))
-    return dict(label=SERIES_LABEL, points=points, count=len(points)) if points else None
+def series(name: str, root: Path) -> list[dict]:
+    """Chart series for :mod:`metrics`.
+
+    Checkpoint results form ``validation_posthoc/loss``; a current base-model
+    result is a separate one-point ``validation_baseline/loss`` series that the
+    GUI draws as a horizontal reference line.
+    """
+    items = _items(root, _current_fingerprint(name))
+    result = []
+    points = _points(items, baseline=False)
+    if points:
+        result.append(dict(label=SERIES_LABEL, points=points, count=len(points)))
+    base = next((item for item in items if item["kind"] == "baseline" and item["status"] == "current"), None)
+    if base is not None:
+        result.append(dict(label=BASELINE_SERIES_LABEL, points=[(0, base["loss"])], count=1))
+    return result
 
 
 # ---------------------------------------------------------------------- validation

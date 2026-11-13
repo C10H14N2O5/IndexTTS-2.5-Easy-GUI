@@ -4,7 +4,7 @@ import { ExternalLink, RefreshCw, Square } from 'lucide-react';
 import { api, errorMessage, type Schemas } from '@/api/client';
 import { useT } from '@/i18n';
 import { Badge, Button, ConfirmDialog, EmptyState, InlineAlert, LineChart, ProgressBar, Section, SegmentedControl, Stat, formatDuration } from '@/ui';
-import { curveSeries, useMetrics, useStopTraining, useTrainingStatus, type AutoStopStatus } from './api';
+import { BASELINE_SERIES, curveSeries, useMetrics, useStopTraining, useTrainingStatus, type AutoStopStatus } from './api';
 import s from './Workbench.module.css';
 
 export function TrainingMonitor({ project, adapter }: { project: string; adapter: string }) {
@@ -19,7 +19,7 @@ export function TrainingMonitor({ project, adapter }: { project: string; adapter
   </Section>
   <Section title={t('Learning curves')} description={t('Read directly from TensorBoard events. At most 2,000 points per series.')} actions={<Button icon={RefreshCw} size="sm" variant="text" pending={metrics.isFetching} onClick={() => void metrics.refetch()}>{t('Refresh')}</Button>}>
     <div className={s.fields}><SegmentedControl value={metric} onChange={setMetric} options={[{ value: 'loss', label: t('Smoothed loss') }, { value: 'raw', label: t('Raw loss') }, { value: 'lr', label: t('Learning rate') }]}/>
-      {series.length ? <LineChart series={series.map(item => ({ label: item.label, points: item.points as [number, number][] }))} height={220} xLabel={t('Step')} /> : <EmptyState title={t('No scalar events yet')} description={t('The chart appears after the trainer writes its first event.')}/>}
+      {series.length ? <LineChart series={series.map(item => item.label === BASELINE_SERIES ? { label: t('Base model (no adapter)'), points: item.points as [number, number][], reference: true } : { label: item.label, points: item.points as [number, number][] })} height={220} xLabel={t('Step')} /> : <EmptyState title={t('No scalar events yet')} description={t('The chart appears after the trainer writes its first event.')}/>}
       {metrics.error && <InlineAlert tone="error">{errorMessage(metrics.error)}</InlineAlert>}{metrics.data?.error && <InlineAlert tone="warning">{metrics.data.error}</InlineAlert>}
       <div className={s.actions}><Button variant="outlined" size="sm" icon={ExternalLink} pending={tb.isPending} onClick={() => tb.mutate(false)}>{t('Start TensorBoard')}</Button><Button variant="text" size="sm" pending={tb.isPending} onClick={() => tb.mutate(true)}>{t('Reload TensorBoard')}</Button></div>
       {tb.data && <InlineAlert tone="info" title={tb.data.message}><a href={tb.data.url} target="_blank" rel="noreferrer">{t('Open TensorBoard')}</a><p>{t('TensorBoard is available only on the computer running IndexTTS. Use the built-in charts from another device.')}</p></InlineAlert>}{tb.error && <InlineAlert tone="error">{errorMessage(tb.error)}</InlineAlert>}

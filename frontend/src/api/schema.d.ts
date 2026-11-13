@@ -2710,6 +2710,11 @@ export interface components {
             dense_end_step?: number | null;
             /** Dense Interval Steps */
             dense_interval_steps?: number | null;
+            /**
+             * Include Baseline
+             * @default false
+             */
+            include_baseline: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -2738,6 +2743,8 @@ export interface components {
             dense_end_step?: number | null;
             /** Dense Interval Steps */
             dense_interval_steps?: number | null;
+            /** Include Baseline */
+            include_baseline?: boolean | null;
             /**
              * Prepare
              * @default false

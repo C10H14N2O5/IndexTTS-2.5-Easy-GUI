@@ -88,9 +88,37 @@ class PosthocApiTests(GuiApiTestCase):
     def saved_entries(self):
         return json.loads((self.out / "validation_posthoc.json").read_text(encoding="utf-8"))["entries"]
 
-    def posthoc_series(self):
+    def posthoc_series(self, label="validation_posthoc/loss"):
         metrics = self.client.get("/api/projects/post/metrics").json()
-        return next((series for series in metrics["series"] if series["label"] == "validation_posthoc/loss"), None)
+        return next((series for series in metrics["series"] if series["label"] == label), None)
+
+    def baseline_series(self):
+        return self.posthoc_series("validation_baseline/loss")
+
+    def tensorboard_steps(self):
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        log = EventAccumulator(str(self.out / "tensorboard/posthoc")).Reload()
+        return [point.step for point in log.Scalars("validation/loss")]
+
+    def enable_baseline(self, value=True):
+        response = self.client.put("/api/projects/post/validation", json={"include_baseline": value})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIs(response.json()["validation"]["include_baseline"], value)
+
+    def record_training_messages(self):
+        """Wrap the fake trainer so every callback message of later runs is kept."""
+        messages = []
+        train_fn = self.state.training.train_fn
+        self.assertIsNotNone(train_fn)
+
+        def recording(config, callback, stop_event):
+            def report(**values):
+                if "message" in values:
+                    messages.append(values["message"])
+                return callback(**values)
+            return train_fn(config, report, stop_event)
+        self.state.training.train_fn = recording
+        return messages
 
     # -------------------------------------------------------------------- tests
     def test_adapters_listing(self):
@@ -145,8 +173,14 @@ class PosthocApiTests(GuiApiTestCase):
 
         series = self.posthoc_series()
         self.assertIsNotNone(series)
-        self.assertEqual([point[0] for point in series["points"]], [0, 2, 4])
-        self.assertAlmostEqual(series["points"][0][1], 2.9)
+        # The base model is a separate reference series, not step 0 of the checkpoint curve.
+        self.assertEqual([point[0] for point in series["points"]], [2, 4])
+        baseline = self.baseline_series()
+        self.assertIsNotNone(baseline)
+        self.assertEqual(len(baseline["points"]), 1)
+        self.assertEqual(baseline["points"][0][0], 0)
+        self.assertAlmostEqual(baseline["points"][0][1], 2.9)
+        self.assertEqual(baseline["count"], 1)
         labels = {s["label"]: s for s in self.client.get("/api/projects/post/metrics").json()["series"]}
         self.assertIn("train/loss_ema", labels)
         # The training-time validation curve is not mixed with the post-hoc run.
@@ -171,13 +205,19 @@ class PosthocApiTests(GuiApiTestCase):
         self.assertEqual(self.calls[-1], [(CKPT6, 6)])
         # Only one event file survives each rewrite.
         self.assertEqual(len(list((self.out / "tensorboard/posthoc").glob("events.out.tfevents.*"))), 1)
-        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [0, 2, 4, 6])
+        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [2, 4, 6])
+        # The TensorBoard post-hoc run keeps the base model at step 0.
+        self.assertEqual(self.tensorboard_steps(), [0, 2, 4, 6])
 
     def test_baseline_only_and_unknown_adapter_results(self):
         self.train()
         _, final = self.run_job(include_baseline=True)
         self.assertEqual(final["result"]["computed"], ["base_model"])
         self.assertEqual(self.rejected(400, include_baseline=True).count("Recompute"), 1)
+        self.assertIsNone(self.posthoc_series())
+        self.assertEqual(self.baseline_series()["points"], [[0, 2.9]])
+        # A post-hoc base model result has no "source"; training-time ones are tagged.
+        self.assertNotIn("source", self.saved_entries()[0])
         empty = self.results(adapter="unknown_adapter")
         self.assertEqual((empty["adapter"], empty["items"]), ("unknown_adapter", []))
         self.assertEqual(self.client.get("/api/projects/post/validation-results",
@@ -261,7 +301,9 @@ class PosthocApiTests(GuiApiTestCase):
         job, _ = self.run_job(checkpoints=["best_adapter"], include_baseline=True)
         self.assertEqual(job["meta"]["targets"], ["base_model", "best_adapter"])
         self.assertEqual(self.calls, [[("base_model", 0), ("best_adapter", step)]])
-        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [0, step])
+        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [step])
+        self.assertEqual([point[0] for point in self.baseline_series()["points"]], [0])
+        self.assertEqual(self.tensorboard_steps(), [0, step])
 
     def test_rebuilt_validation_manifest_marks_results_outdated(self):
         self.train()
@@ -279,6 +321,7 @@ class PosthocApiTests(GuiApiTestCase):
         self.assertEqual(info["validation"]["samples"], 2)
         self.assertTrue(all(item["status"] == "outdated" for item in info["items"]))
         self.assertIsNone(self.posthoc_series())
+        self.assertIsNone(self.baseline_series())
         # The new manifest may be evaluated without Recompute; old results are kept.
         _, final = self.run_job(checkpoints=[CKPT2])
         self.assertEqual(final["result"]["computed"], [CKPT2])
@@ -388,8 +431,11 @@ class PosthocApiTests(GuiApiTestCase):
         self.assertEqual(final["result"]["computed"], ["base_model"])
         self.assertTrue(final["result"]["stopped"])
         self.assertEqual(list(self.items()), ["base_model"])
-        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [0])
+        # Only the baseline is current: no checkpoint curve, just the reference series.
+        self.assertIsNone(self.posthoc_series())
+        self.assertEqual([point[0] for point in self.baseline_series()["points"]], [0])
         self.assertEqual(len(list((self.out / "tensorboard/posthoc").glob("events.out.tfevents.*"))), 1)
+        self.assertEqual(self.tensorboard_steps(), [0])
 
     def test_cancel_skips_reused_final_adapter(self):
         self.train()
@@ -433,3 +479,87 @@ class PosthocApiTests(GuiApiTestCase):
         log = EventAccumulator(str(self.out / "tensorboard/posthoc")).Reload()
         self.assertEqual([point.step for point in log.Scalars("validation/loss")], [2])
         self.run_job(checkpoints=[CKPT4])
+
+    # ------------------------------------------------ baseline during training
+    def test_training_without_include_baseline_records_nothing(self):
+        project = self.client.get("/api/projects/post").json()
+        self.assertIs(project["validation"]["include_baseline"], False)
+        messages = self.record_training_messages()
+        self.train()
+        self.assertFalse((self.out / "validation_posthoc.json").exists())
+        self.assertEqual(self.results()["items"], [])
+        self.assertIsNone(self.baseline_series())
+        self.assertFalse(any("Base model" in text for text in messages), messages)
+        saved = json.loads((self.out / "training_config.json").read_text(encoding="utf-8"))
+        self.assertIs(saved["validation"]["include_baseline"], False)
+
+    def test_training_records_base_model_baseline(self):
+        self.enable_baseline()
+        messages = self.record_training_messages()
+        self.train()
+        saved = json.loads((self.out / "training_config.json").read_text(encoding="utf-8"))
+        self.assertIs(saved["validation"]["include_baseline"], True)
+        fingerprint = self.results()["validation"]["fingerprint"]
+        items = self.items()
+        self.assertEqual(list(items), ["base_model"])
+        base = items["base_model"]
+        self.assertEqual((base["kind"], base["step"], base["status"], base["samples"], base["same_as"]),
+                         ("baseline", 0, "current", 1, None))
+        self.assertAlmostEqual(base["loss"], 2.9)
+        self.assertEqual(base["validation_fingerprint"], fingerprint)
+        [entry] = self.saved_entries()
+        self.assertEqual((entry["name"], entry["source"], entry["weights"], entry["step"]),
+                         ("base_model", "training", None, 0))
+        self.assertIn("Running validation for the base model (no adapter)…", messages)
+        self.assertIn("Base model validation loss: 2.900000", messages)
+        # Charts: a reference series only; the checkpoint curve and training validation are unaffected.
+        self.assertIsNone(self.posthoc_series())
+        self.assertEqual(self.baseline_series()["points"], [[0, 2.9]])
+        validation = self.posthoc_series("validation/loss")
+        self.assertEqual([point[0] for point in validation["points"]], [2, 4, 6])
+        self.assertFalse(list((self.out / "tensorboard/posthoc").glob("events.out.tfevents.*")))
+        # The training-time baseline counts as current for post-hoc runs.
+        self.assertIn("Recompute", self.rejected(400, include_baseline=True))
+        job, final = self.run_job(checkpoints=[CKPT2], include_baseline=True)
+        self.assertEqual(job["meta"]["targets"], [CKPT2])
+        self.assertEqual(self.calls, [[(CKPT2, 2)]])
+        self.assertEqual(final["result"]["computed"], [CKPT2])
+        self.assertEqual(self.tensorboard_steps(), [0, 2])
+        self.assertEqual([point[0] for point in self.posthoc_series()["points"]], [2])
+
+    def test_training_again_reuses_recorded_baseline(self):
+        self.enable_baseline()
+        self.train()
+        computed_at = self.items()["base_model"]["computed_at"]
+        messages = self.record_training_messages()
+        self.train()
+        self.assertIn("Base model validation loss is already recorded for this validation set.", messages)
+        self.assertNotIn("Running validation for the base model (no adapter)…", messages)
+        self.assertEqual(self.items()["base_model"]["computed_at"], computed_at)
+        self.assertEqual(len(self.saved_entries()), 1)
+
+    def test_changed_validation_set_records_a_new_baseline(self):
+        self.enable_baseline()
+        self.train()
+        old = self.results()["validation"]["fingerprint"]
+        self.add_validation_clip("v2", 1.1)
+        info = self.prepare_validation()
+        self.assertIs(info["validation"]["include_baseline"], True)
+        new = self.results()["validation"]["fingerprint"]
+        self.assertNotEqual(new, old)
+        self.assertEqual(self.items()["base_model"]["status"], "outdated")
+        self.assertIsNone(self.baseline_series())
+        messages = self.record_training_messages()
+        self.train()
+        self.assertIn("Running validation for the base model (no adapter)…", messages)
+        baselines = sorted(((item["validation_fingerprint"], item["status"], item["samples"])
+                            for item in self.results()["items"] if item["name"] == "base_model"))
+        self.assertEqual(baselines, sorted([(old, "outdated", 1), (new, "current", 2)]))
+        self.assertEqual(self.baseline_series()["points"], [[0, 2.9]])
+        self.assertEqual(sorted(entry["validation_fingerprint"] for entry in self.saved_entries()), sorted([old, new]))
+
+    def test_disabling_include_baseline_skips_it_on_the_next_run(self):
+        self.enable_baseline()
+        self.enable_baseline(False)
+        self.train()
+        self.assertFalse((self.out / "validation_posthoc.json").exists())

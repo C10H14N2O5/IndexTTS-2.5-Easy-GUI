@@ -171,6 +171,19 @@ def fake_train_lora(config, callback, stop_event):
     callback(message="Loading IndexTTS 2.5 training runtime…")
     time.sleep(0.8)
     callback(message=f"LoRA trainable parameters: {1234567:,}")
+    if validation and validation.get("include_baseline") and not stop_event.is_set():
+        from indextts_training import validation_results
+        if validation_results.has_baseline(out, validation["fingerprint"]):
+            callback(message="Base model validation loss is already recorded for this validation set.")
+        else:
+            callback(message="Running validation for the base model (no adapter)…")
+            time.sleep(0.3)
+            if not stop_event.is_set():
+                # Same value as fake_evaluate_checkpoints scores the base model.
+                validation_results.record_baseline(out, loss=2.9, fingerprint=validation["fingerprint"],
+                                                   samples=len(validation.get("rows") or ()),
+                                                   model_dir=str(config.get("model_dir", "")))
+                callback(message=f"Base model validation loss: {2.9:.6f}")
     began = time.time()
     lr_max = float(config.get("lr", 4e-5))
     ema = None
