@@ -1,7 +1,7 @@
 {
   "name": "indextts-easy-gui-web",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.5.0",
   "type": "module",
   "description": "IndexTTS 2.5 Easy GUI web front end. Built output is committed to tools/gui_web.",
   "scripts": {
