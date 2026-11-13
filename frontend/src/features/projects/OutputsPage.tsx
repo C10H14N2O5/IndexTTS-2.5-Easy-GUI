@@ -8,7 +8,7 @@ import { useT } from '@/i18n';
 import { AudioPlayer, Badge, Button, Checkbox, EmptyState, Field, InlineAlert, LineChart, Section, Select, Skeleton, Switch, formatRelativeTime } from '@/ui';
 import { useTrackedJob } from '@/features/synthesis/api';
 import { JobCard } from '@/features/synthesis/JobCard';
-import { BASELINE_SERIES, projectRoute, useAdapters, useCheckpoints, useMetrics, useProjectContext, useStartValidationRun, useTrainingStatus, useValidationResults, type PosthocItem } from './api';
+import { BASELINE_SERIES, datasetLabel, projectRoute, useAdapters, useCheckpoints, useMetrics, useProjectContext, useStartValidationRun, useTrainingStatus, useValidationResults, type PosthocItem } from './api';
 import s from './Workbench.module.css';
 
 const BASELINE = 'base_model';
@@ -33,7 +33,8 @@ function AdapterOutputs({ project, adapter, own, selector }: { project: string; 
   useEffect(() => { if (!finished) return; for (const key of ['validation-results', 'metrics', 'checkpoints']) void client.invalidateQueries({ queryKey: [key, project] }); }, [client, finished, project]);
   const results = useValidationResults(project, adapter, job?.state === 'running'); const metrics = useMetrics(project, adapter); const run = useStartValidationRun(project);
   const [selected, setSelected] = useState<string[]>([]); const [baseline, setBaseline] = useState(false); const [recompute, setRecompute] = useState(false);
-  const posthoc = results.data?.items ?? []; const validation = results.data?.validation; const base = resultFor(posthoc, BASELINE);
+  const posthoc = results.data?.items ?? []; const validation = results.data?.validation; const base = resultFor(posthoc, BASELINE); const trained = results.data?.trained_with;
+  const recordLabel = (record: { version_id?: string | null; name?: string; revision?: number | null; manifest_sha256?: string | null }) => record.version_id ? datasetLabel(record, '') : `${t('working set')}${record.manifest_sha256 ? ` · ${record.manifest_sha256.slice(0, 8)}` : ''}`;
   const during = new Map(((metrics.data?.series?.find(item => item.label === 'validation/loss')?.points ?? []) as [number, number][]).map(([x, y]) => [x, y]));
   const missing = items.filter(item => resultFor(posthoc, item.name)?.status !== 'current').map(item => item.name);
   const chart = useMemo(() => {
@@ -58,7 +59,8 @@ function AdapterOutputs({ project, adapter, own, selector }: { project: string; 
   {items.length > 0 && <Section title={t('Compute validation loss')} description={t('Measure saved checkpoints on the current validation set after training. Results are stored next to the adapter.')}>
     <div className={s.fields}>
       {results.error && <InlineAlert tone="error">{errorMessage(results.error)}</InlineAlert>}
-      {validation && <InlineAlert tone={validation.ready ? 'success' : 'warning'} title={validation.message} action={!validation.ready && <Link to="../validation" className={s.linkButton}>{t('Configure validation')}</Link>}>{validation.ready && t('{0} clips · fingerprint {1}', validation.samples, (validation.fingerprint ?? '').slice(0, 8))}</InlineAlert>}
+      {validation && <InlineAlert tone={validation.ready ? 'success' : 'warning'} title={validation.message} action={!validation.ready && <Link to="../validation" className={s.linkButton}>{t('Configure validation')}</Link>}>{validation.ready && t('{0} clips · fingerprint {1}', validation.samples, (validation.fingerprint ?? '').slice(0, 8))}{validation.version && <> · {t('validation version {0}', datasetLabel({ version_id: validation.version.id, name: validation.version.name, revision: validation.version.revision }, ''))}</>}</InlineAlert>}
+      {trained && <p className={s.muted}>{t('Latest training run of this adapter: training set {0} · validation set {1}', trained.training ? recordLabel(trained.training) : t('not recorded'), trained.validation ? recordLabel(trained.validation) : t('none'))}</p>}
       {mismatch && <InlineAlert tone="warning">{t('The adapter was trained with a different validation set, so its training-time curve is not directly comparable.')}</InlineAlert>}
       <div className={s.two}><Switch checked={baseline} onCheckedChange={setBaseline} label={t('Include base model (no adapter)')} description={t('Drawn as a dashed reference line on the chart.')}/><Switch checked={recompute} onCheckedChange={setRecompute} label={t('Recompute existing results')} description={t('Otherwise items with a current result are skipped.')}/></div>
       <div className={s.toolbar}><div className={s.actions}><Button variant="outlined" icon={ListChecks} disabledReason={!missing.length ? t('Every checkpoint already has a current result.') : undefined} onClick={() => setSelected(missing)}>{t('Select missing')}</Button><span className={s.muted}>{t('{0} selected', selected.length)}</span></div><Button icon={Calculator} pending={run.isPending} disabledReason={computeReason} onClick={compute}>{t('Compute selected')}</Button></div>
@@ -76,5 +78,5 @@ function AdapterOutputs({ project, adapter, own, selector }: { project: string; 
 
 function LossValue({ item }: { item?: PosthocItem }) {
   const t = useT();
-  return item ? <span className={s.actions}><span>{item.loss.toFixed(4)}</span>{item.status === 'outdated' && <Badge tone="warning">{t('Outdated')}</Badge>}{item.same_as && <span className={s.muted}>{t('same as {0}', item.same_as)}</span>}</span> : <span className={s.muted}>—</span>;
+  return item ? <span className={s.actions}><span>{item.loss.toFixed(4)}</span>{item.status === 'outdated' && <Badge tone="warning">{t('Outdated')}</Badge>}{item.status === 'outdated' && item.validation_version && <span className={s.muted}>{t('on {0} r{1}', item.validation_version.name, item.validation_version.revision)}</span>}{item.same_as && <span className={s.muted}>{t('same as {0}', item.same_as)}</span>}</span> : <span className={s.muted}>—</span>;
 }

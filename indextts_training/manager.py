@@ -26,6 +26,15 @@ class TrainingManager:
             project = load_project(config.get('project'), training_root)
             with directory_lock(project.get('source_folder')):
                 validate_project_manifest(config.get('project'), config['manifest'], training_root)
+                selected = config.get('dataset') or {}
+                if selected.get('version_id'):
+                    # A frozen training version must still match its audio and recorded manifest.
+                    import hashlib
+                    from .dataset_versions import VersionError, usable_rows
+                    frozen = usable_rows(config.get('project'), 'training', selected['version_id'], training_root)
+                    if (hashlib.sha256(frozen['raw']).hexdigest() != selected.get('manifest_sha256')
+                            or frozen['manifest'] != str(Path(config['manifest']).resolve())):
+                        raise VersionError('The selected training version changed. Start training again.')
                 run_config = dict(config)
                 overrides = {}
                 if 'validation_enabled' in run_config:

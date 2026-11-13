@@ -1,6 +1,7 @@
 """Build native acoustic-only trainer configuration from saved widget values."""
 from __future__ import annotations
 
+import hashlib
 import math
 from pathlib import Path
 from typing import Literal
@@ -83,9 +84,26 @@ def start(name: str, overrides: dict | None = None) -> dict:
     with dataset.DATASET_LOCK:
         meta = projects.load_raw(name)
         values = projects.TrainingConfig.model_validate({**projects.training_values(meta), **(overrides or {})}).model_dump()
-        manifest = meta.get("manifest") or ""
+        from . import dataset_versions
+        selected = None
+        if meta.get("dataset_version"):
+            # A frozen training version must be intact; the working corpus may be stale meanwhile.
+            selected = dataset_versions.selection(name, "training")
+            if selected["stale"]:
+                raise ServiceError(selected["message"])
+            manifest = selected["manifest"]
+            stats = selected["stats"]
+        else:
+            manifest = meta.get("manifest") or ""
+            stats = meta.get("stats", {})
         if not manifest or not Path(manifest).is_file():
             raise ServiceError("Prepare/select a valid dataset project first.")
+        dataset_record = dict(role="training", version_id=selected["version_id"] if selected else None,
+                              version_name=selected["name"] if selected else "",
+                              revision=selected["revision"] if selected else None,
+                              manifest=str(Path(manifest).resolve()),
+                              manifest_sha256=hashlib.sha256(Path(manifest).read_bytes()).hexdigest(),
+                              samples=int((stats or {}).get("valid", 0) or 0))
         adapter = projects.normalized_name(values["adapter_name"], adapter=True)
         output = projects.output_dir(name, adapter)
         resume = values["resume_checkpoint"]
@@ -104,7 +122,7 @@ def start(name: str, overrides: dict | None = None) -> dict:
                 raise ServiceError("IndexTTS 2.5 model is missing. Restart with 2- run.bat so the automatic model downloader can repair it.")
             if not cuda_info().get("available"):
                 raise ServiceError("CUDA is unavailable. This Easy GUI is configured as an NVIDIA CUDA build; rerun 1- install.bat and check your NVIDIA driver.")
-        updates = max(1, math.ceil(max(1, int(meta.get("stats", {}).get("valid", 1))) /
+        updates = max(1, math.ceil(max(1, int((stats or {}).get("valid", 1))) /
                                   (values["micro_batch"] * values["grad_accum"])))
         end_step = None
         if values["early_stop_enabled"]:
@@ -137,7 +155,9 @@ def start(name: str, overrides: dict | None = None) -> dict:
                    else values["save_epochs"] * updates, rank=values["lora_rank"], alpha=values["lora_alpha"],
                    dropout=values["lora_dropout"], lr=values["learning_rate"], batch=values["micro_batch"],
                    grad_accum=values["grad_accum"], grad_clip=values["grad_clip"], seed=values["seed"],
-                   vram=values["vram_preset"], resume=resume or None, language=meta.get("language", "EN"),
+                   vram=values["vram_preset"], resume=resume or None,
+                   language=selected["language"] if selected else meta.get("language", "EN"),
+                   dataset=dataset_record,
                    project=name, training_root=str(paths.TRAINING_DIR), eval_enabled=values["eval_enabled"],
                    eval_text=values["eval_text"].strip(), eval_reference=values["eval_reference"],
                    eval_reference_transcript=values["eval_reference_transcript"].strip(),

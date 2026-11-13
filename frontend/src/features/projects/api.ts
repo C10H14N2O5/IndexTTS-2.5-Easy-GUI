@@ -12,7 +12,17 @@ export type AdapterFolder = Schemas['AdapterFolder'];
 export type PosthocResults = Schemas['PosthocResults'];
 export type PosthocItem = Schemas['PosthocItem'];
 export type ValidationRunRequest = Schemas['ValidationRunRequest'];
+export type DatasetRole = 'training' | 'validation';
+export type DatasetSelection = Schemas['DatasetSelection'];
+export type DatasetVersion = Schemas['DatasetVersionInfo'];
+export type DatasetVersionList = Schemas['DatasetVersionList'];
+export type IntegrityReport = Schemas['IntegrityReport'];
 export const projectUrl = (name: string) => `/api/projects/${encodeURIComponent(name)}`;
+export const versionsUrl = (name: string, role: DatasetRole, suffix = '') => `${projectUrl(name)}/dataset-versions/${role}${suffix}`;
+export const versionsKey = (name: string, role: DatasetRole) => ['dataset-versions', name, role] as const;
+export function useDatasetVersions(name: string, role: DatasetRole, revision?: number) { return useQuery({ queryKey: [...versionsKey(name, role), revision], queryFn: ({ signal }) => api.get<DatasetVersionList>(versionsUrl(name, role), undefined, signal), enabled: Boolean(name) }); }
+/** Label of the dataset a run uses: a frozen version, or the working set. */
+export function datasetLabel(selection: { version_id?: string | null; name?: string; revision?: number | null }, working: string) { return selection.version_id ? `${selection.name || selection.version_id}${selection.revision && selection.revision > 1 ? ` (r${selection.revision})` : ''}` : working; }
 export const projectRoute = (name: string, page = 'corpus') => `/projects/${encodeURIComponent(name)}/${page}`;
 export const projectKey = (name: string) => ['project', name] as const;
 export function useProjects() { return useQuery({ queryKey: ['projects'], queryFn: () => api.get<Project[]>('/api/projects') }); }

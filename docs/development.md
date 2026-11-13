@@ -51,6 +51,8 @@ pnpm --dir frontend dev
 - 控制台保留 1400 行，以稳定行号原地替换进度条；清空批次包含 `reset:true`。界面保留最近 50 个已结束作业。
 - 训练与事后验证共用 [`indextts_training/schedule.py`](../indextts_training/schedule.py) 的检查点/验证判定（含提前结束的 `end_step` 与密集验证区间）；模拟训练器也使用它。事后验证损失是 `validation_posthoc` GPU 作业，结果写入适配器目录的 `validation_posthoc.json`（按检查点名与验证清单指纹存储，权重文件大小/修改时间变化即过期），并重写 `tensorboard/posthoc/` 运行；曲线接口追加 `validation_posthoc/loss` 序列（不含基线）和单点的 `validation_baseline/loss` 序列（当前的原始模型结果，前端画成水平虚线参考线）。结果文件的读写在 [`indextts_training/validation_results.py`](../indextts_training/validation_results.py)，事后作业与训练器共用同一把进程内锁：项目验证设置 `include_baseline` 开启时，训练器在第一步之前用 `disable_adapter()` 计算原始模型的验证损失并以 `source="training"` 写入（同指纹已有基线时跳过），不进入自动终止状态机，也不写主 TensorBoard。
 - 自动终止的状态机在 [`indextts_training/auto_stop.py`](../indextts_training/auto_stop.py)（纯 Python，真实与模拟训练器共用）：`best_loss` 实时更新并决定 `best_adapter`，`valley_loss` 只在显著改善（≥ `min_delta`）时移动，是耐心的基准；观察期的额外验证与常规验证取并集；`grace_steps`（含边界、按全局步数）内只更新最优值与谷底，不进入观察期，恢复出的观察期落在豁免期内时会被取消。训练器在同一步**先验证、再保存检查点**，`trainer_state.pt` 的 `auto_stop` 字段因此包含该步的观测，续训时按验证集指纹恢复。
+- 数据集版本在 [`indextts_training/dataset_versions.py`](../indextts_training/dataset_versions.py)（纯 Python）。每个角色（`training` / `validation`）的版本放在 `training/datasets/<项目>/versions/<role>/<id>/`：`manifest.jsonl` 冻结时与工作清单逐字节相同（所以验证指纹不变，已有事后验证结果可以沿用），`audio.jsonl` 按行记录 `{audio, size, mtime_ns, sha256}`，`version.json` 保存名称、备注、`revision`、`manifest_sha256`、按行重算的 `stats` 和修复 `history`；同目录 `index.json` 的 `next` 保证 ID 不复用。选中的版本存在 `project.json` 的 `dataset_version` 与 `validation.version`（`null` 为工作集）。校验对大小相同、修改时间不同的文件再算哈希（进程内按 `(path, size, mtime_ns)` 缓存）；修复在临时目录写好后整体替换版本目录，`revision` 加 1。`services/training.start` 与 `manager.start` 都会核对所选训练版本，`validate_validation_manifest` 直接读取所选验证版本；`cfg["dataset"]` 与 `validation` 中的版本字段随 `training_config.json` 和 `trainer_state.pt` 保存。事后验证与基线条目在使用版本时额外记录 `validation_version {id, name, revision}`；同一版本但修订号不同的结果判为过期。`ProjectInfo.training_dataset` / `validation_dataset` 是一次运行实际会用的数据集（含状态），`dataset_status` / `validation_status` 仍只描述工作集。
+- 盲测删除（`DELETE /api/abx/sessions/{id}`）只删除 ABX 根目录下含 `session.json` 的真实目录，不跟随符号链接或目录联接；与生成任务提交共用 `_SESSION_LOCK`，生成中的会话返回 409。
 - 训练曲线从 TensorBoard event 文件读取，每条曲线最多返回 2000 点。TensorBoard 只绑定 `127.0.0.1`，不由服务器自动打开浏览器；远程访问需自行安全转发。
 
 ### 前端状态与修改保护
@@ -94,6 +96,7 @@ $py = '.\.venv\Scripts\python.exe'
 & $py -B -m unittest discover -s tests -p test_merge_lora_to_pth.py
 & $py -B -m unittest discover -s tests -p test_text_chunking.py
 & $py -B -m unittest discover -s tests -p test_abx.py
+& $py -B -m unittest discover -s tests -p 'test_*dataset_versions.py'
 & $py -B -m unittest discover -s tests -p test_training_schedule.py
 & $py -B -m unittest discover -s tests -p test_version.py
 

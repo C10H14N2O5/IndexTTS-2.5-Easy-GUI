@@ -62,6 +62,10 @@ def seed() -> dict:
                             'eval_text': '欢迎试听训练中的模型。', 'eval_reference': str(paths.VOICES_DIR / 'Demo_Warm.wav'),
                             'eval_reference_transcript': voices[0][1], 'eval_language': 'Chinese'}
         dataset._atomic_write(project_file, json.dumps(meta, ensure_ascii=False, indent=2).encode('utf-8'))
+        # One frozen training version so the dataset version controls have content.
+        from indextts_training import dataset_versions
+        dataset_versions.freeze(project_name, 'training', name='v1', note='演示：前三条语料', activate=False,
+                                root=paths.TRAINING_DIR)
 
     adapter = paths.TRAINING_OUTPUTS_DIR / project_name / 'final_adapter'
     if not adapter.exists():

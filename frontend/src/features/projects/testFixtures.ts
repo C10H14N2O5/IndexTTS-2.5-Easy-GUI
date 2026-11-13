@@ -1,5 +1,5 @@
 import type { Job } from '@/api/live';
-import type { AdapterFolder, Checkpoint, PosthocItem, PosthocResults, Project, TrainingConfig, TrainingStatus } from './api';
+import type { AdapterFolder, Checkpoint, DatasetVersion, DatasetVersionList, PosthocItem, PosthocResults, Project, TrainingConfig, TrainingStatus } from './api';
 export const trainingDefaults: TrainingConfig = {
   adapter_name: '', vram_preset: '24 GB', mode: 'Steps', training_steps: 1000, training_epochs: 20, save_steps: 100, save_epochs: 2, early_stop_enabled: false, early_stop_step: 500,
   auto_stop_enabled: false, auto_stop_patience_steps: 200, auto_stop_min_delta: .005, auto_stop_watch_interval_steps: 25, auto_stop_grace_steps: 200,
@@ -14,6 +14,17 @@ export function projectFixture(): Project { return {
   validation: { source_folder: '', manifest: '', enabled: false, interval_steps: null, dense_enabled: false, dense_start_step: null, dense_end_step: null, dense_interval_steps: null, include_baseline: false, stats: {} }, validation_suggested_folder: 'D:/validation/voice',
   dataset_status: { stale: false, managed: true, manifest: 'D:/prepared/manifest.jsonl', status: 'ready', message: 'Training manifest is up to date.', stats: {} },
   validation_status: { stale: true, managed: false, manifest: '', status: 'missing', message: 'Validation manifest is missing.', stats: {} },
+  dataset_version: null,
+  training_dataset: { role: 'training', version_id: null, name: '', revision: null, status: 'ready', stale: false, message: 'Training manifest is up to date.', manifest: 'D:/prepared/manifest.jsonl', manifest_sha256: 'feedface', stats: { valid: 12, total_seconds: 60 }, language: 'ZH' },
+  validation_dataset: { role: 'validation', version_id: null, name: '', revision: null, status: 'missing', stale: true, message: 'Validation manifest is missing.', manifest: '', manifest_sha256: null, stats: {}, language: 'ZH' },
+}; }
+export function versionFixture(overrides: Partial<DatasetVersion> = {}): DatasetVersion { return {
+  id: 'train-001', role: 'training', name: 'v1', note: '', revision: 1, created_at: 1_700_000_000, updated_at: 1_700_000_000, language: 'ZH', source_folder: 'D:/corpus', manifest_sha256: '0123456789abcdef0123',
+  stats: { valid: 10, total_seconds: 50 }, integrity: { status: 'ready', message: 'Version v1 is ready.', missing: 0, changed: 0 }, diff: { added: 2, removed: 0, text_changed: 1 }, used_by: [], active: false, ...overrides,
+}; }
+export function versionsFixture(versions: DatasetVersion[] = [], active: string | null = null, freezeReason: string | null = null): DatasetVersionList { return {
+  role: 'training', active, working: { stale: false, managed: true, manifest: 'D:/prepared/manifest.jsonl', status: 'ready', message: 'Training manifest is up to date.', stats: {} },
+  freeze_reason: freezeReason, next_name: `v${versions.length + 1}`, versions,
 }; }
 export const adapterFolders: AdapterFolder[] = [
   { name: 'old_voice', path: 'D:/out/old_voice', checkpoints: 1, has_final: false, has_best: false, modified: 100, is_project_adapter: false },
@@ -31,7 +42,8 @@ export function checkpointsFixture(adapter: string): Checkpoint[] {
 export const bestCheckpoint: Checkpoint = { name: 'best_adapter', path: 'D:/out/voice/best_adapter', adapter: 'voice', kind: 'best', step: 150, modified: 210, resumable: true, early_stopped: false, auto_stopped: false, validation_loss: 1.04321 };
 export function posthocFixture(adapter: string): PosthocResults {
   const item = (name: string, kind: PosthocItem['kind'], step: number, loss: number, status: PosthocItem['status'] = 'current'): PosthocItem => ({ name, kind, step, loss, validation_fingerprint: 'abcdef1234567890', samples: 6, computed_at: 100, status, same_as: null });
-  return { project: 'voice', adapter, training_fingerprint: '0123456789abcdef', validation: { ready: true, message: 'Validation manifest is ready.', fingerprint: 'abcdef1234567890', samples: 6, manifest: 'D:/prepared/validation.jsonl' },
+  return { project: 'voice', adapter, training_fingerprint: '0123456789abcdef',
+    trained_with: adapter === 'voice' ? { training: { version_id: 'train-001', name: 'baseline', revision: 2, manifest_sha256: 'feedface', samples: 10 }, validation: { version_id: null, name: '', revision: null, manifest_sha256: 'abcdef1234567890', samples: 6 } } : null, validation: { ready: true, message: 'Validation manifest is ready.', fingerprint: 'abcdef1234567890', samples: 6, manifest: 'D:/prepared/validation.jsonl' },
     items: adapter === 'voice' ? [item('base_model', 'baseline', 0, 2.5), item('checkpoint-step-000100', 'checkpoint', 100, 1.23456), item('checkpoint-step-000200', 'checkpoint', 200, 1.1, 'outdated')] : [] };
 }
 export const posthocJob: Job = { id: 'posthoc1', kind: 'validation_posthoc', title: 'Computing validation loss.', state: 'running', progress: .25, stage: 'Validation checkpoint-step-000200: sample 1/6', started_at: Date.now() / 1000, finished_at: null, cancellable: true, cancel_requested: false, gpu: true, meta: { project: 'voice', adapter: 'voice', targets: ['checkpoint-step-000200'] } };

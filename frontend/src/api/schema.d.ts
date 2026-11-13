@@ -572,6 +572,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/dataset-versions/{role}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dataset Versions */
+        get: operations["dataset_versions_api_projects__name__dataset_versions__role__get"];
+        put?: never;
+        /** Freeze Dataset Version */
+        post: operations["freeze_dataset_version_api_projects__name__dataset_versions__role__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/dataset-versions/{role}/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Select Dataset Version */
+        put: operations["select_dataset_version_api_projects__name__dataset_versions__role__active_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/dataset-versions/{role}/{version_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Dataset Version */
+        delete: operations["delete_dataset_version_api_projects__name__dataset_versions__role___version_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Dataset Version */
+        patch: operations["update_dataset_version_api_projects__name__dataset_versions__role___version_id__patch"];
+        trace?: never;
+    };
+    "/api/projects/{name}/dataset-versions/{role}/{version_id}/integrity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dataset Version Integrity */
+        get: operations["dataset_version_integrity_api_projects__name__dataset_versions__role___version_id__integrity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/dataset-versions/{role}/{version_id}/repair": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Repair Dataset Version */
+        post: operations["repair_dataset_version_api_projects__name__dataset_versions__role___version_id__repair_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/metrics": {
         parameters: {
             query?: never;
@@ -703,7 +790,8 @@ export interface paths {
         get: operations["get_api_abx_sessions__session_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete */
+        delete: operations["delete_api_abx_sessions__session_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1122,6 +1210,13 @@ export interface components {
             /** Notice */
             notice: string;
         };
+        /** AffectedVersion */
+        AffectedVersion: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** AsrAccepted */
         AsrAccepted: {
             job: components["schemas"]["AsrJob"];
@@ -1434,6 +1529,134 @@ export interface components {
              * @default false
              */
             prepare: boolean;
+        };
+        /**
+         * DatasetRecord
+         * @description The dataset recorded in an adapter's training_config.json.
+         */
+        DatasetRecord: {
+            /** Version Id */
+            version_id?: string | null;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /** Revision */
+            revision?: number | null;
+            /** Manifest Sha256 */
+            manifest_sha256?: string | null;
+            /** Samples */
+            samples?: number | null;
+        };
+        /**
+         * DatasetSelection
+         * @description The dataset a training run or validation uses: a frozen version or the working manifest.
+         */
+        DatasetSelection: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "training" | "validation";
+            /** Version Id */
+            version_id?: string | null;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /** Revision */
+            revision?: number | null;
+            /** Status */
+            status: string;
+            /** Stale */
+            stale: boolean;
+            /** Message */
+            message: string;
+            /**
+             * Manifest
+             * @default
+             */
+            manifest: string;
+            /** Manifest Sha256 */
+            manifest_sha256?: string | null;
+            /** Stats */
+            stats?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Language
+             * @default EN
+             */
+            language: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** DatasetVersionInfo */
+        DatasetVersionInfo: {
+            /** Id */
+            id: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "training" | "validation";
+            /** Name */
+            name: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Revision */
+            revision: number;
+            /** Created At */
+            created_at: number;
+            /** Updated At */
+            updated_at: number;
+            /**
+             * Language
+             * @default EN
+             */
+            language: string;
+            /**
+             * Source Folder
+             * @default
+             */
+            source_folder: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Stats */
+            stats?: {
+                [key: string]: unknown;
+            };
+            integrity: components["schemas"]["VersionIntegrity"];
+            diff?: components["schemas"]["VersionDiff"] | null;
+            /** Used By */
+            used_by?: string[];
+            /**
+             * Active
+             * @default false
+             */
+            active: boolean;
+        };
+        /** DatasetVersionList */
+        DatasetVersionList: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "training" | "validation";
+            /** Active */
+            active?: string | null;
+            working: components["schemas"]["WorkingManifest"];
+            /** Freeze Reason */
+            freeze_reason?: string | null;
+            /** Next Name */
+            next_name: string;
+            /** Versions */
+            versions?: components["schemas"]["DatasetVersionInfo"][];
         };
         /** Deleted */
         Deleted: {
@@ -1792,6 +2015,48 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** IntegrityEntry */
+        IntegrityEntry: {
+            /** Audio */
+            audio: string;
+            /** Relocated To */
+            relocated_to?: string | null;
+        };
+        /** IntegrityReport */
+        IntegrityReport: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "damaged" | "invalid";
+            /** Message */
+            message: string;
+            /** Missing */
+            missing?: components["schemas"]["IntegrityEntry"][];
+            /** Changed */
+            changed?: components["schemas"]["IntegrityEntry"][];
+            /**
+             * Missing Count
+             * @default 0
+             */
+            missing_count: number;
+            /**
+             * Changed Count
+             * @default 0
+             */
+            changed_count: number;
+            /**
+             * Relocatable
+             * @default 0
+             */
+            relocatable: number;
+            /** Affected */
+            affected?: components["schemas"]["AffectedVersion"][];
+        };
         /** JobError */
         JobError: {
             /** Message */
@@ -1950,6 +2215,7 @@ export interface components {
             status: "current" | "outdated";
             /** Same As */
             same_as?: string | null;
+            validation_version?: components["schemas"]["VersionRef"] | null;
         };
         /** PosthocResults */
         PosthocResults: {
@@ -1960,6 +2226,7 @@ export interface components {
             validation: components["schemas"]["ValidationSetInfo"];
             /** Training Fingerprint */
             training_fingerprint?: string | null;
+            trained_with?: components["schemas"]["TrainedWith"] | null;
             /** Items */
             items?: components["schemas"]["PosthocItem"][];
         };
@@ -2017,10 +2284,21 @@ export interface components {
             validation_suggested_folder: string;
             dataset_status: components["schemas"]["ManifestStatus"];
             validation_status: components["schemas"]["ManifestStatus"];
+            /** Dataset Version */
+            dataset_version?: string | null;
+            training_dataset: components["schemas"]["DatasetSelection"];
+            validation_dataset: components["schemas"]["DatasetSelection"];
             /** Modified */
             modified: number;
         } & {
             [key: string]: unknown;
+        };
+        /** RepairResult */
+        RepairResult: {
+            /** Message */
+            message: string;
+            /** Versions */
+            versions?: components["schemas"]["DatasetVersionInfo"][];
         };
         /** RuntimeSettings */
         RuntimeSettings: {
@@ -2363,6 +2641,11 @@ export interface components {
              * @default true
              */
             local_only: boolean;
+        };
+        /** TrainedWith */
+        TrainedWith: {
+            training?: components["schemas"]["DatasetRecord"] | null;
+            validation?: components["schemas"]["DatasetRecord"] | null;
         };
         /** TrainingConfig */
         TrainingConfig: {
@@ -2715,6 +2998,8 @@ export interface components {
              * @default false
              */
             include_baseline: boolean;
+            /** Version */
+            version?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -2790,6 +3075,90 @@ export interface components {
              * @default
              */
             manifest: string;
+            version?: components["schemas"]["VersionRef"] | null;
+        };
+        /** VersionDiff */
+        VersionDiff: {
+            /** Added */
+            added: number;
+            /** Removed */
+            removed: number;
+            /** Text Changed */
+            text_changed: number;
+        };
+        /** VersionFreeze */
+        VersionFreeze: {
+            /** Name */
+            name?: string | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Activate
+             * @default true
+             */
+            activate: boolean;
+        };
+        /** VersionIntegrity */
+        VersionIntegrity: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "damaged" | "invalid";
+            /** Message */
+            message: string;
+            /**
+             * Missing
+             * @default 0
+             */
+            missing: number;
+            /**
+             * Changed
+             * @default 0
+             */
+            changed: number;
+        };
+        /** VersionPatch */
+        VersionPatch: {
+            /** Name */
+            name?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * VersionRef
+         * @description A frozen dataset version at one revision.
+         */
+        VersionRef: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Revision */
+            revision: number;
+        };
+        /** VersionRepair */
+        VersionRepair: {
+            /**
+             * Changed
+             * @default accept
+             * @enum {string}
+             */
+            changed: "accept" | "drop";
+            /**
+             * Scope
+             * @default version
+             * @enum {string}
+             */
+            scope: "version" | "affected";
+        };
+        /** VersionSelect */
+        VersionSelect: {
+            /** Version Id */
+            version_id?: string | null;
         };
         /** Voice */
         Voice: {
@@ -2816,6 +3185,25 @@ export interface components {
             reserved_gb: number;
             /** Total Gb */
             total_gb?: number | null;
+        };
+        /** WorkingManifest */
+        WorkingManifest: {
+            /** Stale */
+            stale: boolean;
+            /** Managed */
+            managed: boolean;
+            /** Manifest */
+            manifest: string;
+            /** Status */
+            status: string;
+            /** Message */
+            message: string;
+            /** Stats */
+            stats?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
         };
     };
     responses: never;
@@ -4185,6 +4573,250 @@ export interface operations {
             };
         };
     };
+    dataset_versions_api_projects__name__dataset_versions__role__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetVersionList"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    freeze_dataset_version_api_projects__name__dataset_versions__role__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionFreeze"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetVersionInfo"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    select_dataset_version_api_projects__name__dataset_versions__role__active_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionSelect"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectInfo"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_dataset_version_api_projects__name__dataset_versions__role___version_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ok"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_dataset_version_api_projects__name__dataset_versions__role___version_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetVersionInfo"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    dataset_version_integrity_api_projects__name__dataset_versions__role___version_id__integrity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrityReport"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    repair_dataset_version_api_projects__name__dataset_versions__role___version_id__repair_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                role: "training" | "validation";
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRepair"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepairResult"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     read_metrics_api_projects__name__metrics_get: {
         parameters: {
             query?: {
@@ -4454,6 +5086,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AbxSession"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_api_abx_sessions__session_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ok"];
                 };
             };
             /** @description Invalid request */

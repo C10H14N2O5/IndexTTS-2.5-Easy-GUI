@@ -61,6 +61,57 @@ class AbxApiTests(GuiApiTestCase):
         self.assertEqual(self.wait_job(resumed["id"], timeout=20)["state"], "succeeded")
         self.assertTrue(self.client.get(f"/api/abx/sessions/{sid}").json()["generation_complete"])
 
+    def test_delete_session_removes_folder_and_reports_missing(self):
+        session = self.create_session()
+        sid = session["id"]
+        folder = self.root / "outputs/abx" / sid
+        self.assertTrue((folder / "session.json").is_file())
+        response = self.client.delete(f"/api/abx/sessions/{sid}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"ok": True, "message": f"Blind test deleted: {sid}"})
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.client.get(f"/api/abx/sessions/{sid}").status_code, 404)
+        self.assertEqual(self.client.get("/api/abx/sessions").json(), [])
+        again = self.client.delete(f"/api/abx/sessions/{sid}")
+        self.assertEqual(again.status_code, 404, again.text)
+        self.assertEqual(again.json()["error"]["code"], "not_found")
+        invalid = self.client.delete("/api/abx/sessions/not-an-id")
+        self.assertEqual(invalid.status_code, 400, invalid.text)
+        self.assertEqual(invalid.json()["error"]["message"], "Invalid blind test id: not-an-id")
+
+    def test_delete_is_localized_and_uses_session_name(self):
+        voice = self.audio()
+        response = self.client.post("/api/abx/sessions", json={"voice": str(voice), "name": "Named test",
+                                    "adapter_b": str(self._adapter()), "texts": "hello"})
+        self.assertEqual(response.status_code, 201, response.text)
+        deleted = self.client.delete(f"/api/abx/sessions/{response.json()['id']}", headers={"X-UI-Language": "zh_CN"})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["message"], "已删除盲测对比：Named test")
+
+    def _adapter(self):
+        adapter = self.root / "training/outputs/test/final_adapter"
+        adapter.mkdir(parents=True, exist_ok=True)
+        (adapter / "adapter_config.json").write_text("{}")
+        return adapter
+
+    def test_delete_refused_while_generating(self):
+        session = self.create_session("one\ntwo\nthree", 5)
+        sid = session["id"]
+        other = self.create_session()
+        job = self.submit(f"/api/abx/sessions/{sid}/generate", {})
+        response = self.client.delete(f"/api/abx/sessions/{sid}")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["error"]["code"], "busy")
+        self.assertEqual(response.json()["error"]["message"], "Stop generating this blind test before deleting it.")
+        self.assertTrue((self.root / "outputs/abx" / sid / "session.json").is_file())
+        # Another session can still be deleted while the first is generating.
+        self.assertEqual(self.client.delete(f"/api/abx/sessions/{other['id']}").status_code, 200)
+        self.client.post(f"/api/jobs/{job['id']}/cancel")
+        self.assertEqual(self.wait_job(job["id"])["state"], "cancelled")
+        response = self.client.delete(f"/api/abx/sessions/{sid}")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse((self.root / "outputs/abx" / sid).exists())
+
     def test_invalid_inputs_missing_session_and_activity_conflict(self):
         voice = self.audio()
         response = self.client.post("/api/abx/sessions", json={"voice": str(voice), "texts": "hello"})

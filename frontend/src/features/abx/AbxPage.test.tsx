@@ -59,6 +59,34 @@ describe('blind comparison', () => {
   it('retains setup text when navigating away to change synthesis settings', async () => {
     const view = mount('/abx?b=%2Fadapters%2Fvoice'); await userEvent.type(await screen.findByRole('textbox', { name: 'Test sentences' }), 'Keep this listening plan'); view.unmount(); mount('/abx'); expect(await screen.findByRole('textbox', { name: 'Test sentences' })).toHaveValue('Keep this listening plan'); expect(screen.getByRole('combobox', { name: 'Adapter B' })).toHaveTextContent('Voice adapter');
   });
+  it('deletes a saved comparison only after confirmation, then refreshes the list and selects the next one', async () => {
+    const other = { ...session, id: 'older', name: 'Older comparison', rated: 1, revealed: true };
+    let list: Schemas['AbxSummary'][] = [session, other];
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/api/abx/sessions/demo' && init?.method === 'DELETE') { list = list.filter(item => item.id !== 'demo'); return Response.json({ ok: true, message: 'Blind test deleted: Demo comparison' }); }
+      if (url === '/api/abx/sessions' && init?.method === 'GET') return Response.json(list);
+      if (url.startsWith('/api/abx/sessions/older')) return Response.json(other);
+      return base(input, init);
+    });
+    mount(); await screen.findByText('Trial 1 of 2'); await userEvent.click(screen.getByRole('button', { name: 'Delete comparison' }));
+    const dialog = screen.getByRole('dialog'); expect(within(dialog).getByText('Delete this blind comparison?')).toBeInTheDocument();
+    expect(within(dialog).getByText(/permanently deletes “Demo comparison”.*4 generated clip\(s\) in outputs\/abx\/demo\/\. 0\/2 trials were rated; the results have not been revealed\. This cannot be undone\./)).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url, init]) => url === '/api/abx/sessions/demo' && init?.method === 'DELETE')).toBe(true));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(await screen.findByRole('combobox', { name: 'Comparison' })).toHaveTextContent('Older comparison'); expect(screen.queryByText(/Demo comparison ·/)).not.toBeInTheDocument();
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => url === '/api/abx/sessions' && init?.method === 'GET').length).toBeGreaterThan(1));
+    // The deleted session is never requested again (no 404 flash after deletion).
+    const calls = vi.mocked(fetch).mock.calls; const deleted = calls.findIndex(([url, init]) => url === '/api/abx/sessions/demo' && init?.method === 'DELETE');
+    expect(calls.slice(deleted + 1).some(([url]) => String(url).startsWith('/api/abx/sessions/demo'))).toBe(false);
+  });
+  it('blocks deleting a comparison that is still generating', async () => {
+    useLive.setState({ jobs: { job1: { id: 'job1', kind: 'abx_generate', title: 'Generating samples', state: 'running', progress: 0, stage: null, started_at: Date.now() / 1000, finished_at: null, result: null, error: null, cancellable: true, cancel_requested: false, gpu: true, meta: { session_id: 'demo' } } }, jobOrder: ['job1'] });
+    mount(); const button = await screen.findByRole('button', { name: 'Delete comparison' }); expect(button).toBeDisabled();
+  });
   it('creates from current decoding settings, then starts a separate generation job', async () => {
     localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({ ...defaultForm(), temperature: 1.2 })); mount('/abx?b=%2Fadapters%2Fvoice');
     await userEvent.click(await screen.findByRole('combobox', { name: 'Saved reference voice' })); await userEvent.click(await screen.findByRole('option', { name: 'Reference A' })); await userEvent.type(screen.getByRole('textbox', { name: 'Test sentences' }), 'First\nSecond'); await userEvent.click(screen.getByRole('button', { name: 'Create and generate' }));

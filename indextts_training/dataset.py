@@ -79,7 +79,7 @@ def validation_settings(project):
     saved = project.get('validation')
     defaults = dict(source_folder='', manifest='', stats={}, enabled=False, interval_steps=None,
                     dense_enabled=False, dense_start_step=None, dense_end_step=None, dense_interval_steps=None,
-                    include_baseline=False)
+                    include_baseline=False, version=None)
     return {**defaults, **saved} if isinstance(saved, dict) else defaults
 
 
@@ -435,9 +435,21 @@ def validate_validation_manifest(project, training_manifest, root='training', *,
         settings = validation_settings(load_project(project, root))
         if enabled is _UNSET and not settings['enabled']:
             return None
+        interval = normalize_validation_interval(settings['interval_steps'] if interval_steps is _UNSET else interval_steps)
+        if settings.get('version'):
+            # A frozen validation version: verified rows, independent of the working folder.
+            from .dataset_versions import usable_rows
+            frozen = usable_rows(project, 'validation', settings['version'], root)
+            training_raw, training_rows = _read_manifest_data(training_manifest, 'training')
+            _check_validation_overlap(training_rows, frozen['rows'])
+            ref = frozen['ref']
+            return dict(rows=frozen['rows'], fingerprint=hashlib.sha256(frozen['raw']).hexdigest(),
+                        interval_steps=interval, manifest=frozen['manifest'],
+                        training_fingerprint=hashlib.sha256(training_raw).hexdigest(),
+                        dense=dense_validation(settings), include_baseline=bool(settings.get('include_baseline')),
+                        version_id=ref['id'], version_name=ref['name'], revision=ref['revision'])
         if not settings['source_folder']:
             raise ValueError('Select and save a validation source folder before starting training.')
-        interval = normalize_validation_interval(settings['interval_steps'] if interval_steps is _UNSET else interval_steps)
         from .proofread import directory_asr_running, directory_lock
         with directory_lock(settings['source_folder']):
             if directory_asr_running(settings['source_folder']):
@@ -454,7 +466,8 @@ def validate_validation_manifest(project, training_manifest, root='training', *,
             return dict(rows=rows, fingerprint=fingerprint, interval_steps=interval, manifest=status['manifest'],
                         training_fingerprint=hashlib.sha256(training_raw).hexdigest(),
                         dense=dense_validation(settings),
-                        include_baseline=bool(settings.get('include_baseline')))
+                        include_baseline=bool(settings.get('include_baseline')),
+                        version_id=None, version_name='', revision=None)
 
 
 def list_projects(root='training'):

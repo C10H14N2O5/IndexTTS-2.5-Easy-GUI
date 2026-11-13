@@ -99,6 +99,22 @@ class ValidationConfig(OpenModel):
     dense_end_step: int | None = None
     dense_interval_steps: int | None = None
     include_baseline: bool = False
+    version: str | None = None
+
+
+class DatasetSelection(OpenModel):
+    """The dataset a training run or validation uses: a frozen version or the working manifest."""
+    role: Literal["training", "validation"]
+    version_id: str | None = None
+    name: str = ""
+    revision: int | None = None
+    status: str
+    stale: bool
+    message: str
+    manifest: str = ""
+    manifest_sha256: str | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+    language: str = "EN"
 
 
 class ProjectInfo(OpenModel):
@@ -112,6 +128,9 @@ class ProjectInfo(OpenModel):
     validation_suggested_folder: str
     dataset_status: ManifestStatus
     validation_status: ManifestStatus
+    dataset_version: str | None = None
+    training_dataset: DatasetSelection
+    validation_dataset: DatasetSelection
     modified: float
 
 
@@ -177,6 +196,10 @@ def get(name: str) -> dict:
     meta["validation_suggested_folder"] = str((paths.VALIDATION_DIR / name).resolve())
     meta["dataset_status"] = dataset.dataset_manifest_status(name, paths.TRAINING_DIR)
     meta["validation_status"] = dataset.dataset_manifest_status(name, paths.TRAINING_DIR, role="validation")
+    from . import dataset_versions
+    meta["dataset_version"] = meta.get("dataset_version") or None
+    meta["training_dataset"] = dataset_versions.selection(name, "training", working_status=meta["dataset_status"])
+    meta["validation_dataset"] = dataset_versions.selection(name, "validation", working_status=meta["validation_status"])
     for key in ("dataset_status", "validation_status"):
         meta[key]["message"] = raw(meta[key]["message"])
     meta["modified"] = project_file(name).stat().st_mtime
@@ -311,7 +334,9 @@ def delete(name: str, confirm_name: str) -> dict:
 
 def autotune(name: str, vram_preset: str) -> dict:
     meta = load_raw(name)
-    minutes = float(meta.get("stats", {}).get("total_seconds", 0)) / 60
+    from . import dataset_versions
+    stats = dataset_versions.selection(name, "training")["stats"] if meta.get("dataset_version") else meta.get("stats", {})
+    minutes = float((stats or {}).get("total_seconds", 0)) / 60
     rank = 16 if minutes < 20 else 32
     steps = max(500, min(4000, int(900 + minutes * 45)))
     changes = dict(vram_preset=vram_preset, mode="Steps", training_steps=steps, training_epochs=20,

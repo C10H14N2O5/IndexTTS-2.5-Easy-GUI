@@ -79,5 +79,14 @@
   "Sample 2 much better": "样本 2 明显更好",
   "Adapter A is preferred": "更偏好适配器 A",
   "Adapter B is preferred": "更偏好适配器 B",
-  "No significant difference yet": "暂未发现显著差异"
+  "No significant difference yet": "暂未发现显著差异",
+  "Blind comparison deleted.": "盲测对比已删除。",
+  "Stop generating before deleting this comparison.": "请先停止生成，再删除此对比。",
+  "Delete comparison": "删除对比",
+  "Delete this blind comparison?": "删除此盲测对比？",
+  "Delete permanently": "永久删除",
+  "This permanently deletes “{0}”: the session record, the reference voice copy and {1} generated clip(s) in outputs/abx/{2}/.": "将永久删除“{0}”：outputs/abx/{2}/ 中的对比记录、参考音色副本和 {1} 段已生成音频。",
+  "{0}/{1} trials were rated and the results were revealed.": "已评分 {0}/{1} 组，结果已揭晓。",
+  "{0}/{1} trials were rated; the results have not been revealed.": "已评分 {0}/{1} 组，结果尚未揭晓。",
+  "This cannot be undone.": "此操作无法撤销。"
 }

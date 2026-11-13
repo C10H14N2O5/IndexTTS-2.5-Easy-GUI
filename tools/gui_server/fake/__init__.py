@@ -182,7 +182,8 @@ def fake_train_lora(config, callback, stop_event):
                 # Same value as fake_evaluate_checkpoints scores the base model.
                 validation_results.record_baseline(out, loss=2.9, fingerprint=validation["fingerprint"],
                                                    samples=len(validation.get("rows") or ()),
-                                                   model_dir=str(config.get("model_dir", "")))
+                                                   model_dir=str(config.get("model_dir", "")),
+                                                   version=validation_results.version_ref(validation))
                 callback(message=f"Base model validation loss: {2.9:.6f}")
     began = time.time()
     lr_max = float(config.get("lr", 4e-5))

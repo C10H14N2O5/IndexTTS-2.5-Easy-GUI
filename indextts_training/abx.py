@@ -19,6 +19,7 @@ import random
 import re
 import secrets
 import shutil
+import stat
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -339,6 +340,40 @@ def summarize(session: dict) -> dict:
         "rated": n, "total": trial_count(session), "wins_a": wins_a, "wins_b": wins_b, "ties": ties,
         "mean_b": mean, "stderr": stderr, "p_value": p_value, "verdict": verdict, "rows": rows,
     }
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    if os.path.islink(path):
+        return True
+    is_junction = getattr(path, "is_junction", None)  # Python 3.12+
+    if is_junction is not None:
+        return bool(is_junction())
+    try:
+        # Python 3.11 on Windows: a junction is a mount-point reparse tag.
+        tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return bool(tag) and tag == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def delete_session(root, session_id: str) -> None:
+    """Permanently remove one saved session folder (record, reference copy, clips).
+
+    Only a real directory directly under ``root`` that holds ``session.json``
+    is removed; links and junctions are never followed.
+    """
+    folder = session_dir(root, session_id)
+    # The unresolved entry: ``folder`` is resolved, so a link would already point elsewhere.
+    entry = Path(root).resolve() / str(session_id)
+    with _LOCK:
+        if (entry != folder or _is_link_or_junction(entry) or not entry.is_dir()
+                or not (entry / "session.json").is_file()):
+            raise AbxError("Blind test not found: {0}", session_id)
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:  # includes PermissionError (file held open on Windows)
+            raise AbxError("Some files of blind test {0} are in use. Stop playback and try again.",
+                           session_id) from exc
 
 
 def list_sessions(root) -> list[dict]:

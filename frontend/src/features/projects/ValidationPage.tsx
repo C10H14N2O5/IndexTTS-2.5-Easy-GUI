@@ -4,6 +4,7 @@ import { api, errorMessage } from '@/api/client';
 import { useT } from '@/i18n';
 import { Button, Field, InlineAlert, NumberInput, PathField, Section, Stat, Switch, formatDuration, toast } from '@/ui';
 import { ProofreadPanel, type ProofreadPanelHandle } from '@/features/proofread/ProofreadPanel';
+import { DatasetVersions } from './DatasetVersions';
 import { projectUrl, stat, useProjectContext, useProjectMutation, useTrainingStatus, type Project } from './api';
 import s from './Workbench.module.css';
 
@@ -11,6 +12,7 @@ export default function ValidationPage() {
   const t = useT(); const { project, refresh, setContextLocked } = useProjectContext(); const editor = useRef<ProofreadPanelHandle>(null);
   const prepareChange = async (commit: () => Promise<unknown>) => { if (editor.current) return editor.current.prepareContextChange(commit); try { await commit(); return true; } catch { return false; } };
   return <div className={s.stack}><ValidationSettings key={`${project.project_name}:${project.modified}`} project={project} prepareChange={prepareChange}/>
+    <DatasetVersions project={project} role="validation"/>
     {project.validation.source_folder ? <Section title={t('Review validation transcripts')} description={t('Validation uses the project language, but its source and manifest remain independent.')}><ProofreadPanel ref={editor} project={project.project_name} directory={project.validation.source_folder} role="validation" language={project.language ?? 'EN'} onUpdated={refresh} onContextLockedChange={setContextLocked}/></Section> : <InlineAlert tone="info">{t('Save a validation folder to open its proofreading workspace.')}</InlineAlert>}
   </div>;
 }

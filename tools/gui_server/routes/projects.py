@@ -7,6 +7,7 @@ from pydantic import Field, field_validator
 from ..i18n import render
 from ..schemas import ApiModel, JobInfo, Ok
 from ..services import projects, metrics, posthoc
+from ..services import dataset_versions as versions
 from ..services.projects import ProjectInfo, TrainingConfig, CheckpointInfo
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -135,6 +136,42 @@ def validation_results(name: str, adapter: str | None = None):
 @router.post("/{name}/validation-runs", response_model=ValidationRunAccepted, status_code=202)
 def validation_run(name: str, request: posthoc.ValidationRunRequest):
     return render({"job": posthoc.start(name, request).to_dict()})
+
+
+@router.get("/{name}/dataset-versions/{role}", response_model=versions.DatasetVersionList)
+def dataset_versions(name: str, role: versions.Role):
+    return render(versions.listing(name, role))
+
+
+@router.post("/{name}/dataset-versions/{role}", response_model=versions.DatasetVersionInfo, status_code=201)
+def freeze_dataset_version(name: str, role: versions.Role, request: versions.VersionFreeze):
+    return render(versions.freeze(name, role, request))
+
+
+@router.put("/{name}/dataset-versions/{role}/active", response_model=ProjectInfo)
+def select_dataset_version(name: str, role: versions.Role, request: versions.VersionSelect):
+    versions.select(name, role, request.version_id)
+    return render(projects.get(name))
+
+
+@router.patch("/{name}/dataset-versions/{role}/{version_id}", response_model=versions.DatasetVersionInfo)
+def update_dataset_version(name: str, role: versions.Role, version_id: str, request: versions.VersionPatch):
+    return render(versions.update(name, role, version_id, request))
+
+
+@router.delete("/{name}/dataset-versions/{role}/{version_id}", response_model=Ok)
+def delete_dataset_version(name: str, role: versions.Role, version_id: str):
+    return render(versions.delete(name, role, version_id))
+
+
+@router.get("/{name}/dataset-versions/{role}/{version_id}/integrity", response_model=versions.IntegrityReport)
+def dataset_version_integrity(name: str, role: versions.Role, version_id: str):
+    return render(versions.integrity(name, role, version_id))
+
+
+@router.post("/{name}/dataset-versions/{role}/{version_id}/repair", response_model=versions.RepairResult)
+def repair_dataset_version(name: str, role: versions.Role, version_id: str, request: versions.VersionRepair):
+    return render(versions.repair(name, role, version_id, request))
 
 
 @router.get("/{name}/metrics", response_model=metrics.MetricsResponse)

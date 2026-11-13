@@ -180,6 +180,78 @@ class AbxTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(abx.AbxError):
                 abx.session_dir(self.root, bad)
 
+    def test_delete_session_removes_folder(self):
+        session = self.create()
+        self.generate_all(session)
+        other = self.create()
+        abx.delete_session(self.root, session["id"])
+        self.assertFalse((self.root / session["id"]).exists())
+        self.assertTrue(abx.reference_path(other).is_file())
+        self.assertEqual([s["id"] for s in abx.list_sessions(self.root)], [other["id"]])
+        with self.assertRaises(abx.AbxError) as caught:
+            abx.load_session(self.root, session["id"])
+        self.assertEqual(caught.exception.template, "Blind test not found: {0}")
+
+    def test_delete_session_rejects_invalid_and_missing(self):
+        for bad in ("../x", "..", "", "abc", "2026/11"):
+            with self.subTest(bad=bad), self.assertRaises(abx.AbxError) as caught:
+                abx.delete_session(self.root, bad)
+            self.assertEqual(caught.exception.template, "Invalid blind test id: {0}")
+        not_session = self.root / "20200101_000000"
+        not_session.mkdir(parents=True)
+        (not_session / "keep.txt").write_text("x", encoding="utf-8")
+        (self.root / "20200102_000000").write_text("a file", encoding="utf-8")
+        for missing in ("20990101_000000", "20200101_000000", "20200102_000000"):
+            with self.subTest(missing=missing), self.assertRaises(abx.AbxError) as caught:
+                abx.delete_session(self.root, missing)
+            self.assertEqual(caught.exception.template, "Blind test not found: {0}")
+        self.assertTrue((not_session / "keep.txt").is_file())
+        self.assertTrue((self.root / "20200102_000000").is_file())
+
+    @staticmethod
+    def _directory_link(link, target) -> bool:
+        import os
+        import subprocess
+        try:
+            os.symlink(target, link, target_is_directory=True)
+            return True
+        except OSError:
+            if os.name != "nt":
+                return False
+        # Unprivileged Windows: a directory junction needs no special rights.
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        return result.returncode == 0
+
+    def test_delete_session_never_follows_links(self):
+        import os
+        session = self.create()
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "session.json").write_text("{}", encoding="utf-8")
+        (outside / "precious.wav").write_text("x", encoding="utf-8")
+        # One link escapes the root; the other points at a real session inside it.
+        links = {"20200101_000000": outside, "20200102_000000": self.root / session["id"]}
+        for name, target in links.items():
+            if not self._directory_link(self.root / name, target):
+                self.skipTest("cannot create directory links")
+        for name in links:
+            with self.subTest(name=name), self.assertRaises(abx.AbxError) as caught:
+                abx.delete_session(self.root, name)
+            # An escaping link is already an invalid id; an inner one is "not found".
+            self.assertIn(caught.exception.template, {"Invalid blind test id: {0}", "Blind test not found: {0}"})
+            self.assertTrue(os.path.lexists(self.root / name))
+        self.assertTrue((outside / "precious.wav").is_file())
+        self.assertTrue((self.root / session["id"] / "session.json").is_file())
+
+    def test_delete_session_reports_files_in_use(self):
+        from unittest import mock
+        session = self.create()
+        with mock.patch.object(abx.shutil, "rmtree", side_effect=PermissionError("locked")), \
+                self.assertRaises(abx.AbxError) as caught:
+            abx.delete_session(self.root, session["id"])
+        self.assertEqual(caught.exception.template,
+                         "Some files of blind test {0} are in use. Stop playback and try again.")
+
     def test_list_sessions_skips_broken_records(self):
         session = self.create()
         self.generate_all(session)

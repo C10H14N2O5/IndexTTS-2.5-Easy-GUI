@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import random
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Literal
 from pydantic import Field, field_validator
 from indextts_training import abx as native
 from .. import paths
-from ..errors import NotFound, ServiceError
+from ..errors import Busy, Conflict, NotFound, ServiceError
 from ..i18n import msg
 from ..schemas import ApiModel, OpenModel
 from ..state import current
@@ -16,6 +17,9 @@ from . import engine, library
 from .projects import language_code
 from .synthesis import GenerationParams, runtime_options, infer_kwargs
 from .uploads import require_audio
+
+# Serializes "start generating a session" against "delete that session".
+_SESSION_LOCK = threading.Lock()
 
 
 class AbxCreate(ApiModel):
@@ -142,11 +146,6 @@ def _synthesize(clip: dict, session: dict, output: Path):
 
 
 def generate(session_id: str):
-    session = load(session_id)
-    if session.get("revealed") and not native.generation_complete(session):
-        raise ServiceError("Results are revealed; ratings can no longer be changed.")
-    state = current()
-
     def run(ctx):
         for progress in native.generate_clips(session, _synthesize, lambda: ctx.cancel_requested):
             ctx.check_cancelled()
@@ -155,8 +154,31 @@ def generate(session_id: str):
         ctx.check_cancelled()
         return {"session_id": session_id, "clips_done": len(session["clips"]), "clips_total": len(session["clips"])}
 
-    return state.jobs.submit("abx_generate", msg("Generating blind test clips."), run, gpu=True,
-                             meta={"session_id": session_id})
+    # Load and submit atomically with respect to delete(): a deletion either sees
+    # the running job (409) or happens first, so the job then loads nothing.
+    with _SESSION_LOCK:
+        session = load(session_id)
+        if session.get("revealed") and not native.generation_complete(session):
+            raise ServiceError("Results are revealed; ratings can no longer be changed.")
+        return current().jobs.submit("abx_generate", msg("Generating blind test clips."), run, gpu=True,
+                                     meta={"session_id": session_id})
+
+
+def delete(session_id: str) -> dict:
+    with _SESSION_LOCK:
+        session = load(session_id)
+        if any(job.get("state") == "running" and job.get("kind") == "abx_generate"
+               and (job.get("meta") or {}).get("session_id") == session_id for job in current().jobs.list()):
+            raise Busy("Stop generating this blind test before deleting it.")
+        try:
+            native.delete_session(paths.ABX_DIR, session_id)
+        except native.AbxError as exc:
+            if exc.template == "Blind test not found: {0}":
+                raise NotFound(exc.template, *exc.args_) from exc
+            raise Conflict(exc.template, *exc.args_) from exc
+    message = msg("Blind test deleted: {0}", session.get("name") or session["id"])
+    current().status.publish("Blind A/B test", message, "success")
+    return {"ok": True, "message": message}
 
 
 def rate(session_id: str, index: int, score: int | None) -> dict:

@@ -4,7 +4,7 @@ from typing import Literal
 from fastapi import APIRouter, Query
 from pydantic import Field
 from ..i18n import render
-from ..schemas import ApiModel, JobInfo
+from ..schemas import ApiModel, JobInfo, Ok
 from ..services import abx
 
 router = APIRouter(prefix="/api/abx", tags=["abx"])
@@ -32,6 +32,11 @@ def create(request: abx.AbxCreate):
 @router.get("/sessions/{session_id}", response_model=abx.AbxSession)
 def get(session_id: str, trial: int = Query(0, ge=0)):
     return abx.detail(abx.load(session_id), trial)
+
+
+@router.delete("/sessions/{session_id}", response_model=Ok)
+def delete(session_id: str):
+    return render(abx.delete(session_id))
 
 
 @router.post("/sessions/{session_id}/generate", response_model=AbxJobResponse, status_code=202)

@@ -731,7 +731,8 @@ def train_lora(config, callback, stop_event):
                 baseline_loss = _validation_loss(tts, validation_rows, device, 0, stop_event)
             if baseline_loss is not None:
                 validation_results.record_baseline(out, loss=baseline_loss, fingerprint=validation['fingerprint'],
-                                                   samples=len(validation_rows), model_dir=str(model_dir))
+                                                   samples=len(validation_rows), model_dir=str(model_dir),
+                                                   version=validation_results.version_ref(validation))
                 callback(message=f'Base model validation loss: {baseline_loss:.6f}')
 
     # A resume from an earlier checkpoint can replay previously logged steps.

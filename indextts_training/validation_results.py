@@ -53,9 +53,21 @@ def has_baseline(root, fingerprint: str | None) -> bool:
         item["name"] == BASELINE and item.get("validation_fingerprint") == fingerprint for item in load(root))
 
 
-def record_baseline(root, *, loss: float, fingerprint: str, samples: int, model_dir: str) -> None:
+def version_ref(validation: dict | None) -> dict | None:
+    """``{id, name, revision}`` of a frozen validation version in a trainer config, else None."""
+    if not isinstance(validation, dict) or not validation.get("version_id"):
+        return None
+    return dict(id=validation["version_id"], name=validation.get("version_name") or validation["version_id"],
+                revision=int(validation.get("revision") or 1))
+
+
+def record_baseline(root, *, loss: float, fingerprint: str, samples: int, model_dir: str,
+                    version: dict | None = None) -> None:
     """Store the base-model validation loss measured by the trainer."""
     Path(root).mkdir(parents=True, exist_ok=True)
-    upsert(root, dict(name=BASELINE, step=0, loss=float(loss), validation_fingerprint=fingerprint,
-                      samples=int(samples), computed_at=time.time(), model_dir=str(model_dir), same_as=None,
-                      weights=None, source="training"))
+    entry = dict(name=BASELINE, step=0, loss=float(loss), validation_fingerprint=fingerprint,
+                 samples=int(samples), computed_at=time.time(), model_dir=str(model_dir), same_as=None,
+                 weights=None, source="training")
+    if version:
+        entry["validation_version"] = version
+    upsert(root, entry)

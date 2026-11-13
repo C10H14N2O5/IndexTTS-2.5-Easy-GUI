@@ -6,6 +6,7 @@ import { useCatalog } from '@/app/bootstrap';
 import { useT } from '@/i18n';
 import { Button, Disclosure, Field, InlineAlert, PathField, Section, Select, Stat, TextInput, formatDuration, toast } from '@/ui';
 import { ProofreadPanel, type ProofreadPanelHandle } from '@/features/proofread/ProofreadPanel';
+import { DatasetVersions } from './DatasetVersions';
 import { projectUrl, stat, useProjectContext, useProjectMutation, useTrainingStatus, type Project } from './api';
 import s from './Workbench.module.css';
 
@@ -13,6 +14,7 @@ export default function CorpusPage() {
   const { project, refresh, setContextLocked } = useProjectContext(); const t = useT(); const editor = useRef<ProofreadPanelHandle>(null);
   const prepareChange = async (commit: () => Promise<unknown>) => { if (editor.current) return editor.current.prepareContextChange(commit); try { await commit(); return true; } catch { return false; } };
   return <div className={s.stack}><CorpusSettings key={`${project.project_name}:${project.modified}`} project={project} prepareChange={prepareChange}/>
+    <DatasetVersions project={project} role="training"/>
     <Section title={t('Review transcripts')} description={t('Correct the words before building the training manifest. Audio files stay untouched.')}>
       <ProofreadPanel ref={editor} project={project.project_name} directory={project.source_folder ?? ''} role="training" language={project.language ?? 'EN'} onUpdated={refresh} onContextLockedChange={setContextLocked}/>
     </Section></div>;

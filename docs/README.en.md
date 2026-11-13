@@ -12,7 +12,7 @@ A local Windows GUI for [IndexTTS 2.5](https://github.com/index-tts/index-tts). 
 
 - **Voice Library**: upload or record reference clips and reuse them.
 - **Inference**: single-text and multi-speaker dialogue synthesis, automatic long-text chunking, and emotion control from reference audio, an emotion vector, or a text description.
-- **Dataset Preparation**: fill in missing transcripts with SenseVoice on the CPU, then proofread each clip by ear.
+- **Dataset Preparation**: fill in missing transcripts with SenseVoice on the CPU, then proofread each clip by ear. Training and validation sets can be frozen as read-only versions, so you can still train on or compare against an earlier set after the corpus grows.
 - **LoRA Training** (experimental): fine-tune the GPT module on your corpus, with checkpoints, resume, early stop, validation loss (including post-hoc evaluation of saved checkpoints), evaluation audio, and TensorBoard.
 - **Blind A/B Test**: compare two adapters (or the base model) by blind listening, with preference statistics and a significance test, to tell whether a new LoRA is a real improvement or a regression.
 - **Export GPT Checkpoint**: merge a LoRA into a full `.pth` that the ComfyUI IndexTTS-2.5 nodes can load.

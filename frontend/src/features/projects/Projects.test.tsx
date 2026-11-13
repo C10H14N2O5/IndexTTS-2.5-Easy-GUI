@@ -8,14 +8,14 @@ import { bootstrapKey } from '@/app/bootstrap';
 import { applyEvent, useLive } from '@/api/live';
 import { setLanguage } from '@/i18n';
 import { testBootstrap } from '@/features/synthesis/testFixtures';
-import { adapterFolders, bestCheckpoint, checkpointsFixture, posthocFixture, posthocJob, projectFixture, idleTraining, trainingDefaults } from './testFixtures';
+import { adapterFolders, bestCheckpoint, checkpointsFixture, posthocFixture, posthocJob, projectFixture, idleTraining, trainingDefaults, versionFixture, versionsFixture } from './testFixtures';
 import ProjectsPage from './ProjectsPage';
 import ProjectLayout from './ProjectLayout';
 import TrainingPage from './TrainingPage';
 import CorpusPage from './CorpusPage';
 import ValidationPage from './ValidationPage';
 import OutputsPage from './OutputsPage';
-import { curveSeries, warmupSteps, type Checkpoint, type Project, type TrainingStatus } from './api';
+import { curveSeries, warmupSteps, type Checkpoint, type DatasetVersion, type Project, type TrainingStatus } from './api';
 
 const guard = vi.hoisted(() => ({ allow: true, locked: false, order: [] as string[] }));
 vi.mock('@/features/proofread/ProofreadPanel', () => ({ ProofreadPanel: function MockPanel(props: { project: string; directory: string; role: string; language: string; ref?: Ref<{ prepareContextChange: (commit: () => Promise<unknown>) => Promise<boolean> }>; onContextLockedChange?: (locked: boolean) => void; onUpdated?: () => void }) {
@@ -25,8 +25,21 @@ vi.mock('@/features/proofread/ProofreadPanel', () => ({ ProofreadPanel: function
   return <div><div data-testid="proofreader">{JSON.stringify({ project: props.project, directory: props.directory, role: props.role, language: props.language })}</div><button onClick={() => props.onContextLockedChange?.(false)}>Resolve mock edits</button><button onClick={() => { project.dataset_status = { ...project.dataset_status, stale: true, message: 'Training manifest needs updating.' }; props.onUpdated?.(); }}>Mock saved transcript</button></div>;
 } }));
 let client: QueryClient; let project: Project; let metricSeries: { label: string; points: [number, number][]; count: number }[] = []; let checkpointOverride: ((adapter: string) => Checkpoint[]) | null = null;
+let versions: DatasetVersion[] = []; let activeVersion: string | null = null; let freezeReason: string | null = null;
+/** In-memory dataset version endpoints for the corpus and validation pages. */
+function versionsResponse(url: string, init?: RequestInit) {
+  const method = init?.method ?? 'GET'; const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+  const id = decodeURIComponent(url.split('/dataset-versions/')[1]!.split('/')[1] ?? '');
+  if (url.endsWith('/active')) { activeVersion = (body.version_id as string | null) ?? null; const chosen = versions.find(item => item.id === activeVersion); project = { ...project, dataset_version: activeVersion, training_dataset: { ...project.training_dataset, version_id: activeVersion, name: chosen?.name ?? '', revision: chosen ? chosen.revision : null, stats: chosen?.stats ?? project.stats } }; return Response.json(project); }
+  if (url.endsWith('/integrity')) return Response.json({ id, name: 'v1', status: 'damaged', message: 'Version v1: 2 audio file(s) are missing and 1 were changed since it was frozen. Repair the version or choose another one.', missing: [{ audio: 'D:/corpus/a.wav', relocated_to: 'D:/corpus/moved/a.wav' }, { audio: 'D:/corpus/b.wav', relocated_to: null }], changed: [{ audio: 'D:/corpus/c.wav', relocated_to: null }], missing_count: 2, changed_count: 1, relocatable: 1, affected: [{ id: 'train-002', name: 'v2' }] });
+  if (url.endsWith('/repair')) { versions = versions.map(item => item.id === id ? { ...item, revision: item.revision + 1, integrity: { status: 'ready', message: 'Version v1 is ready.', missing: 0, changed: 0 } } : item); return Response.json({ message: 'Repaired dataset versions: v1.', versions: [] }); }
+  if (method === 'POST') { const created = versionFixture({ id: `train-00${versions.length + 1}`, name: (body.name as string | null) || `v${versions.length + 1}`, note: String(body.note ?? '') }); versions = [...versions, created]; if (body.activate) activeVersion = created.id; return Response.json(created, { status: 201 }); }
+  if (method === 'PATCH') { versions = versions.map(item => item.id === id ? { ...item, name: String(body.name), note: String(body.note ?? '') } : item); return Response.json(versions.find(item => item.id === id)); }
+  if (method === 'DELETE') { versions = versions.filter(item => item.id !== id); if (activeVersion === id) activeVersion = null; return Response.json({ ok: true, message: 'Dataset version deleted: v1.' }); }
+  return Response.json(versionsFixture(versions.map(item => ({ ...item, active: item.id === activeVersion })), activeVersion, freezeReason));
+}
 beforeEach(() => {
-  setLanguage('en_US'); localStorage.clear(); project = projectFixture(); guard.allow = true; guard.locked = false; guard.order = [];
+  setLanguage('en_US'); localStorage.clear(); project = projectFixture(); guard.allow = true; guard.locked = false; guard.order = []; versions = []; activeVersion = null; freezeReason = null;
   useLive.setState({ ready: true, connection: 'open', jobs: {}, jobOrder: [], training: null, export: null });
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); client.setQueryData(bootstrapKey, testBootstrap());
   Element.prototype.scrollIntoView = vi.fn(); Element.prototype.hasPointerCapture = vi.fn(() => false); Element.prototype.setPointerCapture = vi.fn(); Element.prototype.releasePointerCapture = vi.fn(); metricSeries = []; checkpointOverride = null;
@@ -42,6 +55,7 @@ beforeEach(() => {
     if (url.includes('/validation-results')) return Response.json(posthocFixture(adapter));
     if (url.endsWith('/validation-runs')) return Response.json({ job: posthocJob }, { status: 202 });
     if (url.startsWith('/api/jobs/')) return Response.json(useLive.getState().jobs[posthocJob.id] ?? posthocJob);
+    if (url.includes('/dataset-versions/')) return versionsResponse(url, init);
     if (init?.method === 'PUT') { const body = JSON.parse(String(init.body)); if (String(url).endsWith('/training')) project = { ...project, training: body }; else if (String(url).endsWith('/validation')) project = { ...project, validation: { ...project.validation, ...body } }; else project = { ...project, ...body }; return Response.json(project); }
     if (init?.method === 'DELETE') return Response.json({ deleted: 'voice' });
     if (url === '/api/projects/voice/clone') return Response.json({ ...project, project_name: 'voice_copy' });
@@ -223,7 +237,7 @@ const watching: NonNullable<TrainingStatus['auto_stop']> = { phase: 'watching', 
 const withBest = (adapter: string) => adapter === 'voice' ? [...checkpointsFixture(adapter).map(item => item.kind === 'final' ? { ...item, early_stopped: false, auto_stopped: true } : item), bestCheckpoint] : checkpointsFixture(adapter);
 describe('auto stop', () => {
   it('saves the auto stop settings from the training form', async () => {
-    project.validation = { ...project.validation, enabled: true }; project.validation_status = { ...project.validation_status, stale: false }; mount(); await screen.findByText('Training setup');
+    project.validation = { ...project.validation, enabled: true }; project.validation_status = { ...project.validation_status, stale: false }; project.validation_dataset = { ...project.validation_dataset, stale: false, status: 'ready' }; mount(); await screen.findByText('Training setup');
     await userEvent.click(screen.getByRole('button', { name: /Auto stop/ })); await userEvent.click(screen.getByRole('switch', { name: 'Stop automatically when validation loss stops improving' }));
     for (const [name, value] of [['Patience (steps)', '300'], ['Minimum improvement', '0.01'], ['Watch-period validation interval (steps)', '50']] as const) { const input = screen.getByRole('spinbutton', { name }); await userEvent.clear(input); await userEvent.type(input, value); }
     expect(screen.getByRole('button', { name: 'Save and start training' })).toBeEnabled(); await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
@@ -304,6 +318,59 @@ describe('auto stop', () => {
     await userEvent.click(within(row).getByRole('link', { name: 'Resume training' })); await waitFor(() => expect(router.state.location.search).toContain('best_adapter'));
     const resume = await screen.findByRole('combobox', { name: 'Resume checkpoint' }); expect(resume).toHaveTextContent('best_adapter'); await userEvent.click(resume);
     expect(await screen.findByRole('option', { name: 'best_adapter' })).toHaveTextContent('Best adapter · step 150 · validation loss 1.0432'); expect(screen.getByRole('option', { name: 'checkpoint-step-000200' })).toBeInTheDocument(); expect(screen.queryByRole('option', { name: 'final_adapter' })).not.toBeInTheDocument();
+  });
+});
+
+describe('dataset versions', () => {
+  const requests = (method: string) => vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).includes('/dataset-versions/') && (init?.method ?? 'GET') === method);
+  it('freezes the working manifest with a name and note and uses it', async () => {
+    mount('/projects/voice/corpus'); await waitFor(() => expect(screen.getByRole('button', { name: 'Freeze current manifest' })).toBeEnabled()); await userEvent.click(screen.getByRole('button', { name: 'Freeze current manifest' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Freeze the current manifest' }); expect(within(dialog).getByRole('switch', { name: 'Use this version after freezing' })).toBeChecked();
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Version name' }), 'baseline'); await userEvent.type(within(dialog).getByRole('textbox', { name: 'Note' }), 'first 10 clips');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Freeze' }));
+    await waitFor(() => expect(requests('POST')).toHaveLength(1)); expect(JSON.parse(String(requests('POST')[0]![1]!.body))).toEqual({ name: 'baseline', note: 'first 10 clips', activate: true });
+    expect(await screen.findByText('Proofreading and rebuilding the manifest below only change the working set. Version baseline stays unchanged.')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Training uses' })).toHaveTextContent('baseline · 10 clips'); expect(screen.getByText('+2 added · −0 removed · 1 text changes')).toBeInTheDocument();
+  });
+  it('explains why freezing is unavailable', async () => {
+    freezeReason = 'Build an up-to-date training manifest before freezing it.'; mount('/projects/voice/corpus');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Freeze current manifest' })).toBeDisabled());
+  });
+  it('switches the dataset used for training and back to the working set', async () => {
+    versions = [versionFixture()]; mount('/projects/voice/corpus');
+    await userEvent.click(await screen.findByRole('combobox', { name: 'Training uses' })); await userEvent.click(await screen.findByRole('option', { name: /^v1 · 10 clips/ }));
+    await waitFor(() => expect(requests('PUT')).toHaveLength(1)); expect(JSON.parse(String(requests('PUT')[0]![1]!.body))).toEqual({ version_id: 'train-001' });
+    expect(await screen.findByText('Version ID')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('combobox', { name: 'Training uses' })); await userEvent.click(await screen.findByRole('option', { name: /^Working set/ }));
+    await waitFor(() => expect(requests('PUT')).toHaveLength(2)); expect(JSON.parse(String(requests('PUT')[1]![1]!.body))).toEqual({ version_id: null });
+  });
+  it('renames and deletes a version after confirmation', async () => {
+    versions = [versionFixture({ used_by: ['voice_v1'] })]; activeVersion = 'train-001'; mount('/projects/voice/corpus'); await screen.findByText('Version ID');
+    const details = screen.getByText('Version ID').closest('section')!;
+    await userEvent.click(within(details).getAllByRole('button', { name: 'Rename' })[0]!); const rename = await screen.findByRole('dialog', { name: 'Rename version train-001' });
+    const name = within(rename).getByRole('textbox', { name: 'Version name' }); await userEvent.clear(name); expect(within(rename).getByRole('button', { name: 'Save' })).toBeDisabled(); await userEvent.type(name, 'baseline'); await userEvent.click(within(rename).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(requests('PATCH')).toHaveLength(1)); expect(JSON.parse(String(requests('PATCH')[0]![1]!.body))).toMatchObject({ name: 'baseline' });
+    await userEvent.click(within(details).getAllByRole('button', { name: 'Delete' })[0]!); const confirm = await screen.findByRole('dialog', { name: 'Delete version baseline?' });
+    expect(confirm).toHaveTextContent('Training records of voice_v1 keep the version ID'); expect(confirm).toHaveTextContent('the working set is used afterwards'); expect(requests('DELETE')).toHaveLength(0);
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Delete version' }));
+    await waitFor(() => expect(requests('DELETE')).toHaveLength(1)); expect(String(requests('DELETE')[0]![0])).toMatch(/\/dataset-versions\/training\/train-001$/);
+  });
+  it('repairs a damaged version, optionally with the other affected versions', async () => {
+    versions = [versionFixture({ integrity: { status: 'damaged', message: 'Version v1: 2 audio file(s) are missing and 1 were changed since it was frozen. Repair the version or choose another one.', missing: 2, changed: 1 } })]; activeVersion = 'train-001';
+    mount('/projects/voice/corpus'); expect(await screen.findByText('Training and validation with this version are blocked until it is repaired.')).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Repair' })[0]!); const dialog = await screen.findByRole('dialog', { name: 'Repair version v1' });
+    expect(await within(dialog).findByText('D:/corpus/a.wav → D:/corpus/moved/a.wav')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'Remove these clips' })); await userEvent.click(within(dialog).getByRole('checkbox'));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Repair' }));
+    await waitFor(() => expect(requests('POST')).toHaveLength(1)); expect(JSON.parse(String(requests('POST')[0]![1]!.body))).toEqual({ changed: 'drop', scope: 'affected' });
+  });
+  it('shows the dataset versions recorded by the adapter training run', async () => {
+    mount('/projects/voice/outputs'); expect(await screen.findByText('Latest training run of this adapter: training set baseline (r2) · validation set working set · abcdef12')).toBeInTheDocument();
+  });
+  it('blocks training on a damaged frozen version and plans steps from its clips', async () => {
+    project.dataset_version = 'train-001'; project.training_dataset = { ...project.training_dataset, version_id: 'train-001', name: 'v1', revision: 2, status: 'damaged', stale: true, message: 'Version v1: 1 audio file(s) are missing and 0 were changed since it was frozen. Repair the version or choose another one.', stats: { valid: 40 } };
+    mount(); expect(await screen.findByText('Training set: v1 (r2) · 40 clips')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save and start training' })).toBeDisabled(); expect(screen.getAllByText(/1 audio file\(s\) are missing/).length).toBeGreaterThan(0);
   });
 });
 

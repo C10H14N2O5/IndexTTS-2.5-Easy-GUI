@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router';
-import { ArrowLeft, ArrowRight, FlaskConical, Play, Plus, RefreshCw, Unlock } from 'lucide-react';
+import { ArrowLeft, ArrowRight, FlaskConical, Play, Plus, RefreshCw, Trash2, Unlock } from 'lucide-react';
 import { api, errorMessage, mediaUrl, type Schemas } from '@/api/client';
 import { useGpuJob, useJobs, useLive, type Job } from '@/api/live';
 import { useCatalog, useSettings } from '@/app/bootstrap';
@@ -20,7 +20,7 @@ const sessionUrl = (id: string) => `/api/abx/sessions/${encodeURIComponent(id)}`
 export default function AbxPage() {
   const t = useT(); const [params, setParams] = useSearchParams(); const client = useQueryClient();
   const sessions = useQuery({ queryKey: ['abx-sessions'], queryFn: () => api.get<Schemas['AbxSummary'][]>('/api/abx/sessions') });
-  const [selected, setSelected] = useState(params.get('session') ?? ''); const [index, setIndex] = useState(0); const [creating, setCreating] = useState(!params.get('session')); const [revealOpen, setRevealOpen] = useState(false);
+  const [selected, setSelected] = useState(params.get('session') ?? ''); const [index, setIndex] = useState(0); const [creating, setCreating] = useState(!params.get('session')); const [revealOpen, setRevealOpen] = useState(false); const [deleteOpen, setDeleteOpen] = useState(false);
   const sid = selected || sessions.data?.[0]?.id || ''; const tracked = useTrackedJob(); const jobs = useJobs(); const job = tracked.job?.meta?.session_id === sid ? tracked.job : jobs.find(item => item.kind === 'abx_generate' && item.meta?.session_id === sid); const gpu = useGpuJob();
   const training = useLive(state => state.training?.running); const exporting = useLive(state => state.export?.status === 'running' || state.export?.status === 'cancelling');
   const detail = useQuery({ queryKey: ['abx-session', sid, index], queryFn: () => api.get<Session>(sessionUrl(sid), { trial: index }), enabled: Boolean(sid), refetchInterval: job?.state === 'running' ? 1500 : false });
@@ -29,6 +29,15 @@ export default function AbxPage() {
   const generation = useMutation({ mutationFn: (id: string) => api.post<{ job: Job }>(`${sessionUrl(id)}/generate`), onSuccess: ({ job: value }) => tracked.track(value) });
   const rate = useMutation({ mutationFn: (score: number | null) => api.put<Session>(`${sessionUrl(sid)}/rate`, { index, score }), onSuccess: data => { client.setQueryData(['abx-session', sid, index], data); void client.invalidateQueries({ queryKey: ['abx-sessions'] }); } });
   const reveal = useMutation({ mutationFn: () => api.post<Session>(`${sessionUrl(sid)}/reveal`, {}, { trial: index }), onSuccess: data => { client.setQueryData(['abx-session', sid, index], data); void client.invalidateQueries({ queryKey: ['abx-sessions'] }); toast.success(t('Results revealed. Ratings are now locked.')); } });
+  const remove = useMutation({ mutationFn: (id: string) => api.delete<Schemas['Ok']>(sessionUrl(id)), onSuccess: (result, id) => {
+    // Drop the deleted entry right away so the page never refetches a session that no longer exists.
+    const list = sessions.data ?? []; const position = Math.max(0, list.findIndex(item => item.id === id)); const rest = list.filter(item => item.id !== id); const next = rest[Math.min(position, rest.length - 1)];
+    client.setQueryData(['abx-sessions'], rest); client.removeQueries({ queryKey: ['abx-session', id] }); void client.invalidateQueries({ queryKey: ['abx-sessions'] });
+    setSelected(next?.id ?? ''); setIndex(0); setCreating(open => open || !next); setRevealOpen(false); setDeleteOpen(false);
+    void setParams(previous => { const value = new URLSearchParams(previous); value.delete('session'); return value; }, { replace: true });
+    toast.success(result?.message || t('Blind comparison deleted.'));
+  } });
+  const summary = sessions.data?.find(item => item.id === sid); const generating = job?.state === 'running';
   const busy = training ? t('Wait for training to finish.') : exporting ? t('Wait for checkpoint export to finish.') : gpu ? t('The GPU is busy: {0}', gpu.title) : undefined;
   const session = detail.data; const trial = session?.trial;
   const revealedFirst = session?.revealed && session.results ? (session.results as unknown as ComparisonResults).rows.find(row => row.index === index)?.sample_1 : undefined;
@@ -37,7 +46,7 @@ export default function AbxPage() {
     {creating && <CreateComparison adapterA={params.get('a')} adapterB={params.get('b')} busyReason={busy} onCreated={result => { select(result.id); generation.mutate(result.id); }}/>}
     <Section title={t('Saved comparisons')} actions={<Button variant="text" size="sm" icon={RefreshCw} pending={sessions.isFetching} onClick={() => void sessions.refetch()}>{t('Refresh')}</Button>}>
       {sessions.error && <InlineAlert tone="error">{errorMessage(sessions.error)}</InlineAlert>}
-      {sessions.data?.length ? <Field label={t('Comparison')}><Select value={sid} onChange={select} options={sessions.data.map(item => ({ value: item.id, label: `${item.name || item.id} · ${t('{0}/{1} rated', item.rated, item.trials)}${item.revealed ? ` · ${t('Revealed')}` : ''}` }))}/></Field> : <EmptyState icon={FlaskConical} title={t('No blind comparisons yet')} description={t('Choose two different adapters above, including the original model if you wish.')}/>}
+      {sessions.data?.length ? <div className={s.toolbar} style={{ alignItems: 'flex-end' }}><div style={{ flex: 1, minWidth: 240 }}><Field label={t('Comparison')}><Select value={sid} onChange={select} options={sessions.data.map(item => ({ value: item.id, label: `${item.name || item.id} · ${t('{0}/{1} rated', item.rated, item.trials)}${item.revealed ? ` · ${t('Revealed')}` : ''}` }))}/></Field></div><Button variant="text" icon={Trash2} disabled={!summary} disabledReason={generating ? t('Stop generating before deleting this comparison.') : undefined} onClick={() => setDeleteOpen(true)}>{t('Delete comparison')}</Button></div> : <EmptyState icon={FlaskConical} title={t('No blind comparisons yet')} description={t('Choose two different adapters above, including the original model if you wish.')}/>}
     </Section>
     {[detail.error, generation.error, rate.error, reveal.error, tracked.error].filter(Boolean).map((error, n) => <InlineAlert key={n} tone="error">{errorMessage(error)}</InlineAlert>)}
     {job && <JobCard job={job}/>}
@@ -54,6 +63,8 @@ export default function AbxPage() {
     </Section>}
     {session?.revealed && session.results && <ComparisonReport session={session} results={session.results as unknown as ComparisonResults}/>}
     <ConfirmDialog open={revealOpen} onOpenChange={setRevealOpen} title={t('Reveal the adapter identities?')} description={t('This locks all ratings. {0} trial(s) are still unrated.', (session?.trials ?? 0) - (session?.rated ?? 0))} confirmLabel={t('Reveal and lock ratings')} tone="default" onConfirm={() => reveal.mutateAsync()}/>
+    <ConfirmDialog open={deleteOpen && Boolean(summary)} onOpenChange={setDeleteOpen} title={t('Delete this blind comparison?')} confirmLabel={t('Delete permanently')} onConfirm={() => remove.mutateAsync(sid)}
+      description={summary && [t('This permanently deletes “{0}”: the session record, the reference voice copy and {1} generated clip(s) in outputs/abx/{2}/.', summary.name || summary.id, summary.clips_done, summary.id), summary.revealed ? t('{0}/{1} trials were rated and the results were revealed.', summary.rated, summary.trials) : t('{0}/{1} trials were rated; the results have not been revealed.', summary.rated, summary.trials), t('This cannot be undone.')].join(' ')}/>
   </div>;
 }
 
